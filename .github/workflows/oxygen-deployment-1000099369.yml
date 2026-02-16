@@ -36,6 +36,18 @@ jobs:
         run: npm ci
 
       - name: Build and Publish to Oxygen
-        run: npx shopify hydrogen deploy
+        run: npx shopify hydrogen deploy --auth-bypass-token --auth-bypass-token-duration 12
         env:
           SHOPIFY_HYDROGEN_DEPLOYMENT_TOKEN: ${{ secrets.OXYGEN_DEPLOYMENT_TOKEN_1000099369 }}
+
+      - name: Extract deployment info
+        if: always()
+        run: |
+          echo "=== h2_deploy_log.json ==="
+          cat h2_deploy_log.json 2>/dev/null || echo "File not found"
+          echo ""
+          echo "=== Deployment URL ==="
+          jq -r '.url // "not found"' h2_deploy_log.json 2>/dev/null || echo "Parse failed"
+          echo ""
+          echo "=== Auth Bypass Token ==="
+          jq -r '.authBypassToken // "not found"' h2_deploy_log.json 2>/dev/null || echo "Parse failed"
