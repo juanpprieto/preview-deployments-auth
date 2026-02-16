@@ -1,3 +1,4 @@
+// Staging bot validation test
 import {Analytics, getShopAnalytics, useNonce} from '@shopify/hydrogen';
 import {
   Outlet,
