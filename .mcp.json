@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "hydrogen_docs": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://gitmcp.io/Shopify/hydrogen"
+      ]
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest"]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--extension"],
+      "env": {
+        "PLAYWRIGHT_MCP_EXTENSION_TOKEN": "kEXJe9Av5zJ8RJ82R-Wpw2CJlXXlSBo6PXlA7j_MXcw"
+      }
+    }
+  }
+}
