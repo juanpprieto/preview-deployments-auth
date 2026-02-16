@@ -8,6 +8,8 @@
 
 ## Table of Contents
 
+- [Validated Findings — Live Testing (Feb 16, 2026)](#validated-findings--live-testing-feb-16-2026)
+
 1. [Oxygen Architecture Overview](#1-oxygen-architecture-overview)
 2. [Environment Types](#2-environment-types)
 3. [Default Access Control (Private by Default)](#3-default-access-control-private-by-default)
@@ -28,6 +30,117 @@
 18. [Worker Specs and Limits](#18-worker-specs-and-limits)
 19. [Data Retention](#19-data-retention)
 20. [Caveats, Gotchas, and Unknowns](#20-caveats-gotchas-and-unknowns)
+21. [Next Steps — Admin Validations Checklist](#21-next-steps--admin-validations-checklist)
+
+---
+
+## Validated Findings — Live Testing (Feb 16, 2026)
+
+> Tested using Chrome DevTools MCP against live Oxygen deployments from PRs #1 and #2 on `juanpprieto/preview-deployments-auth`.
+
+### Test Environment
+
+| Item | Value |
+|------|-------|
+| PR #1 deployment | `01khjyg0n4tgszfjzbt9pa9x77-e0cbf6cbca25f889f5d7.myshopify.dev` |
+| PR #2 deployment | `01khk3v03za7ecg5ezjcc0bcfp-e0cbf6cbca25f889f5d7.myshopify.dev` |
+| Shared store hash | `e0cbf6cbca25f889f5d7` |
+| x-shopid | `60187836438` |
+
+### Test Results
+
+#### 1. Bare Preview URL → Shopify OAuth Redirect (CONFIRMED)
+
+Navigating to PR #2's bare URL triggers a **4-hop redirect chain**:
+
+```
+GET {deployment}.myshopify.dev/
+  → 302 to accounts.shopify.com/oauth/authorize?...&client_id=b453446d-e0fe-4cfc-ac90-a129d3114660&redirect_uri=https://cf-auth-worker.myshopify.dev/oauth/callback&prompt=select_account
+    → 302 to accounts.shopify.com/select?rid=...
+      → 302 to accounts.shopify.com/lookup?rid=...&verify=...
+        → 200 Shopify Login page ("Log in — Continue to Oxygen")
+```
+
+**Key details from initial 302 (Gateway Worker):**
+- `powered-by: Shopify, Oxygen` header confirms Gateway Worker
+- Clears existing cookies: `set-cookie: user_session_id=; Max-Age=0` and `mac=; Max-Age=0`
+- OAuth scope: `openid email`
+- OAuth `prompt=select_account` forces account selection
+- `cf-auth-worker.myshopify.dev` is the Cloudflare Auth Worker handling OAuth callback
+
+#### 2. Shareable Link (`?_auth=` JWT) → Direct 200 (CONFIRMED)
+
+Navigating to PR #1's shareable link returns **200 OK immediately** — no redirect chain.
+
+**Response headers:**
+- `powered-by: Shopify, Oxygen, Hydrogen` (note: includes "Hydrogen" — different from auth redirect which only has "Shopify, Oxygen")
+- `set-cookie: auth_bypass_token=<JWT>; Max-Age=3600; Domain=myshopify.dev; Path=/; HttpOnly; Secure`
+- `oxygen-full-page-cache: uncacheable`
+- `x-robots-tag: none`
+
+**Critical finding: The `?_auth=` JWT is copied verbatim into the `auth_bypass_token` cookie.**
+The cookie value is byte-for-byte identical to the `?_auth=` query parameter value.
+
+#### 3. Cookie Persistence (CONFIRMED)
+
+After visiting the shareable link (which sets the `auth_bypass_token` cookie), subsequent navigations to the **same deployment** work **without** the `?_auth=` parameter.
+
+- Navigated to `/collections/all` on PR #1's deployment → **200 OK**
+- Request sent `cookie: auth_bypass_token=<JWT>` automatically
+- Cookie `Domain=myshopify.dev` means it's sent to ALL `*.myshopify.dev` subdomains
+
+**Cookie TTL: 1 hour** (`Max-Age=3600`)
+
+#### 4. Cross-Deployment JWT Isolation (CONFIRMED)
+
+The `auth_bypass_token` cookie is sent to all `*.myshopify.dev` subdomains (due to `Domain=myshopify.dev`), but the **Gateway Worker validates the JWT `sub` claim** against the target deployment's GID.
+
+- Navigated to PR #2's deployment with PR #1's cookie still set → **302 to Shopify OAuth**
+- The cookie was sent (visible in request headers) but the Gateway Worker rejected it
+- JWT `sub: "gid://oxygen-hub/Deployment/4042382"` only matches PR #1's deployment
+
+This means: **cookies travel across subdomains, but auth is deployment-scoped via JWT validation.**
+
+#### 5. JWT Token Analysis (CONFIRMED)
+
+```json
+{
+  "header": { "alg": "HS256" },
+  "payload": {
+    "sub": "gid://oxygen-hub/Deployment/4042382",
+    "kind": "USER_SHARED",
+    "iat": 1771236256
+  }
+}
+```
+
+| Property | Value | Significance |
+|----------|-------|--------------|
+| Algorithm | HS256 | Symmetric key — Shopify signs and validates |
+| `sub` | Deployment GID | Scopes token to ONE deployment |
+| `kind` | `USER_SHARED` | Distinguishes from auth bypass tokens |
+| `iat` | 2026-02-16T10:04:16Z | Issue time (matches deployment) |
+| `exp` | **ABSENT** | Token never expires intrinsically |
+
+#### 6. GitHub Bot Behavior: Shareable Link vs Bare URL
+
+| PR | Bot posted | `?_auth=` included? | Bare URL behavior |
+|----|-----------|---------------------|-------------------|
+| PR #1 | Shareable link | Yes | Not tested bare (cookie present) |
+| PR #2 | Bare URL | **No** | 302 → Shopify OAuth |
+
+**Hypothesis**: `pullRequestPreviewPublicUrl` was toggled between PR #1 and PR #2 deployments. When `true`, bot posts bare URL; when `false`, bot includes `?_auth=` token. However, the Gateway Worker may enforce auth independently of this setting, or the setting was toggled back before testing.
+
+#### 7. Response Header Differences: Auth vs Authenticated
+
+| Header | Auth redirect (302) | Authenticated (200) |
+|--------|-------------------|--------------------|
+| `powered-by` | `Shopify, Oxygen` | `Shopify, Oxygen, Hydrogen` |
+| `oxygen-full-page-cache` | (absent) | `uncacheable` |
+| `x-robots-tag` | (absent) | `none` |
+| `set-cookie` | Clears `user_session_id`, `mac` | Sets `auth_bypass_token`, `_shopify_essential` |
+
+The `powered-by` header is a reliable indicator: if it includes "Hydrogen", the request reached the Storefront Worker. If it only says "Shopify, Oxygen", the Gateway Worker intercepted and redirected.
 
 ---
 
@@ -281,9 +394,13 @@ The `?_auth=` token is a **HS256-signed JWT** (not the same as the deployment to
 - **Plan requirement**: Basic plan and above.
 - **Auto-generation**: Shopify GitHub bot auto-creates and posts shareable links in PR comments.
 
-### Key Insight
+### Key Insight (CORRECTED after live testing)
 
-The Shopify GitHub bot **always posts a shareable link** in PR comments (when `pullRequestCommentsEnabled: true`). This means even when `pullRequestPreviewPublicUrl: false` (staff auth enabled), the PR comment includes a `?_auth=` token that bypasses auth for anyone with the link. The `pullRequestPreviewPublicUrl` toggle controls whether the **base URL without the token** requires auth, not whether the bot generates a shareable link.
+The Shopify GitHub bot **conditionally posts shareable links** based on `pullRequestPreviewPublicUrl`:
+- When `false` (auth enabled): bot posts URL **with** `?_auth=<JWT>` — anyone with the link can access
+- When `true` (auth disabled): bot posts **bare URL** without token
+
+This was validated by comparing PR #1 (bot posted `?_auth=` link) vs PR #2 (bot posted bare URL), indicating the toggle was changed between deployments.
 
 ### Limitations
 
@@ -336,9 +453,13 @@ Admin UI → Hydrogen Storefront → Settings → Oxygen Deployments section.
 
 See [API traces doc](./preview-deployment-auth-api-responses.md) for full request/response details.
 
-### Important Nuance
+### Important Nuance (CORRECTED after live testing)
 
-Even when `pullRequestPreviewPublicUrl: false` (auth enabled), the **GitHub bot still posts shareable links** with `?_auth=` tokens in PR comments. So PR reviewers with the link can always access the preview — the toggle only controls whether the **base URL** (without `?_auth=`) requires login.
+The bot's PR comment format **changes based on this setting**:
+- `false` (auth enabled): bot posts URL with `?_auth=<JWT>` token — PR reviewers can access via the link
+- `true` (auth disabled): bot posts bare URL without token — implies anyone can access directly
+
+**Open question**: PR #2 bare URL still required OAuth login despite the bot posting a bare URL. This suggests either the setting was toggled back to `false` after the deployment, there's a propagation delay, or storefront-level password protection overrides this setting.
 
 ### Characteristics
 
@@ -675,7 +796,7 @@ After a successful preview deployment, `shopify[bot]` posts a PR comment:
 | Deployment details | Link to Admin deployment page |
 | Last update | Timestamp |
 
-The preview link **always includes a `?_auth=` shareable link token**, regardless of the `pullRequestPreviewPublicUrl` setting.
+The preview link includes a `?_auth=` shareable link token **when `pullRequestPreviewPublicUrl: false`** (auth enabled). When `true`, the bot posts a bare URL without the token.
 
 ---
 
@@ -692,25 +813,59 @@ Production gets a named URL:
 https://{storefront-name}-{hash}.o2.myshopify.dev
 ```
 
-### Auth Flow for Private Previews
+### Auth Flow for Private Previews (VALIDATED)
 
-When `pullRequestPreviewPublicUrl: false` (default):
+When a preview requires auth (no valid `?_auth=` param or `auth_bypass_token` cookie):
 
-1. User visits `https://{hash}.myshopify.dev` (no `?_auth=`)
-2. **Gateway Worker** intercepts, checks for staff auth cookie
-3. No cookie → redirects to Shopify login
-4. User authenticates as store staff
-5. Redirect back to preview URL with session cookie
-6. Gateway Worker validates cookie **on every subsequent route navigation**
+```
+1. GET {deployment}.myshopify.dev/
+2. Gateway Worker checks for:
+   a. Valid auth_bypass_token cookie (JWT with matching deployment GID in sub claim)
+   b. Valid ?_auth= query parameter
+   c. Valid user_session_id cookie (from prior Shopify OAuth login)
+3. None found → 302 redirect chain:
+   a. → accounts.shopify.com/oauth/authorize (client_id=b453446d..., redirect_uri=cf-auth-worker.myshopify.dev/oauth/callback)
+   b. → accounts.shopify.com/select (account selection)
+   c. → accounts.shopify.com/lookup (credential entry — "Continue to Oxygen")
+4. User authenticates as Shopify staff
+5. OAuth callback to cf-auth-worker.myshopify.dev → sets session cookies
+6. Redirect back to deployment URL
+```
 
-### Auth Flow with Shareable Link
+**Key validated details:**
+- Gateway Worker clears stale cookies on redirect: `user_session_id=; Max-Age=0` and `mac=; Max-Age=0`
+- OAuth scope is `openid email` — minimal profile access
+- `prompt=select_account` forces account picker every time
+- Auth worker lives at `cf-auth-worker.myshopify.dev` (Cloudflare Worker)
+- `powered-by: Shopify, Oxygen` header (no "Hydrogen") confirms Gateway Worker intercepted before reaching Storefront Worker
 
-1. User visits `https://{hash}.myshopify.dev?_auth=<JWT>`
-2. **Gateway Worker** sees `?_auth=` query parameter
-3. Validates JWT signature (HS256) and `sub` claim (deployment GID)
-4. JWT has `kind: USER_SHARED` — shareable link, no expiry check needed
-5. Grants access without staff login
-6. Likely sets a session cookie for subsequent navigations
+### Auth Flow with Shareable Link (VALIDATED)
+
+```
+1. GET {deployment}.myshopify.dev/?_auth=<JWT>
+2. Gateway Worker validates JWT:
+   a. Verifies HS256 signature
+   b. Checks sub claim matches target deployment GID
+   c. Checks kind is USER_SHARED
+   d. No exp claim → no expiry check
+3. Sets cookie: auth_bypass_token=<JWT>; Max-Age=3600; Domain=myshopify.dev; Path=/; HttpOnly; Secure
+4. Forwards request to Storefront Worker
+5. Returns 200 with powered-by: Shopify, Oxygen, Hydrogen
+```
+
+**Critical validated finding:** The `?_auth=` JWT value is copied **verbatim** into the `auth_bypass_token` cookie. This cookie then authenticates all subsequent requests to the same deployment for 1 hour without needing `?_auth=` in the URL.
+
+**Cookie properties:**
+| Property | Value | Implication |
+|----------|-------|-------------|
+| `Max-Age` | `3600` (1 hour) | Cookie expires after 1 hour, requiring re-auth |
+| `Domain` | `myshopify.dev` | Sent to ALL `*.myshopify.dev` subdomains |
+| `HttpOnly` | `true` | Cannot be read by JavaScript |
+| `Secure` | `true` | Only sent over HTTPS |
+| `Path` | `/` | Covers all paths |
+| `SameSite` | (not set) | Defaults to `Lax` in modern browsers |
+
+**Cross-deployment isolation:** The cookie is SENT to all deployments (due to `Domain=myshopify.dev`) but the Gateway Worker REJECTS it for non-matching deployments by validating the JWT `sub` claim against the target deployment's GID.
 
 ### Auth Flow with Auth Bypass Token
 
@@ -723,15 +878,14 @@ When `pullRequestPreviewPublicUrl: false` (default):
 
 These are **two independent mechanisms**:
 
-| Setting | Base URL (no token) | URL with `?_auth=` | Bot posts link? |
-|---------|--------------------|--------------------|----------------|
-| `pullRequestPreviewPublicUrl: true` | Public (no auth) | N/A (already public) | Yes |
-| `pullRequestPreviewPublicUrl: false` | Requires staff login | Bypasses auth | Yes |
+| Setting | Base URL (no token) | URL with `?_auth=` | Bot posts `?_auth=`? |
+|---------|--------------------|--------------------|---------------------|
+| `pullRequestPreviewPublicUrl: true` | Public (no auth) — **NEEDS VERIFICATION** | Works (bypasses auth) | **No** — bare URL only |
+| `pullRequestPreviewPublicUrl: false` | Requires staff login (302 → OAuth) | Bypasses auth | **Yes** — includes JWT |
 
-The bot **always** posts a shareable link. So the `pullRequestPreviewPublicUrl` toggle matters for:
-- Direct URL sharing (without the `?_auth=` token)
-- Bookmarked URLs
-- Search engine access (though `robots.txt` blocks indexing)
+The `pullRequestPreviewPublicUrl` toggle controls BOTH:
+1. Whether the base URL requires auth (Gateway Worker enforcement)
+2. Whether the bot includes `?_auth=` token in PR comments
 
 ---
 
@@ -830,7 +984,7 @@ The bot **always** posts a shareable link. So the `pullRequestPreviewPublicUrl` 
 10. **Rotating `PRIVATE_STOREFRONT_API_TOKEN` does NOT auto-redeploy** — must push a new commit.
 11. **Deployment tokens expire after 1 year** — must manually delete and recreate.
 12. **The 12-hour bypass token limit is a hard limit** in `@shopify/oxygen-cli`, not just documentation.
-13. **The Shopify GitHub bot always posts shareable links** in PR comments, even when staff auth is enabled. The `pullRequestPreviewPublicUrl` toggle only controls the base URL access.
+13. ~~**The Shopify GitHub bot always posts shareable links**~~ **CORRECTED** — The bot posts `?_auth=` shareable links when `pullRequestPreviewPublicUrl: false` (auth enabled), but posts **bare URLs** when `pullRequestPreviewPublicUrl: true` (auth disabled). Validated via PR #1 (got `?_auth=`) vs PR #2 (got bare URL).
 14. **GitHub Deployments API is not used** — Oxygen deployments are not registered as GitHub deployment objects. Tracked entirely within Shopify's platform.
 15. **Oxygen does not support proxies** in front of deployments due to bot mitigation conflicts.
 
@@ -838,13 +992,15 @@ The bot **always** posts a shareable link. So the `pullRequestPreviewPublicUrl` 
 
 1. **Is `pullRequestPreviewPublicUrl` plan-gated?** No documentation found.
 2. **Can shareable links be created programmatically?** No public API found. Only Admin UI + GitHub bot auto-generation.
-3. **What is the exact Oxygen auth flow for staff login?** Gateway Worker redirects to Shopify login, but the cookie/session specifics are undocumented.
+3. ~~**What is the exact Oxygen auth flow for staff login?**~~ **RESOLVED** — See [Validated Findings](#validated-findings--live-testing-feb-16-2026). Full 4-hop redirect chain documented: Gateway Worker → OAuth authorize → account select → lookup → login page.
 4. **Is there a rate limit on `SourceCodeProviderUpdate` mutations?** Uses internal Admin API proxy.
 5. **Can `pullRequestPreviewPublicUrl` be toggled via the Shopify CLI?** No flag exists currently.
-6. **Do shareable link tokens interact with `pullRequestPreviewPublicUrl`?** Based on PR #1, the bot posts tokens regardless of the setting.
+6. ~~**Do shareable link tokens interact with `pullRequestPreviewPublicUrl`?**~~ **PARTIALLY RESOLVED** — Bot posts `?_auth=` when setting is `false`, bare URL when `true`. But the `?_auth=` token always works regardless of the setting. The toggle only controls bot comment format and base URL access.
 7. **Do auth bypass tokens work on public deployments?** Likely a no-op, unconfirmed.
-8. **Can the Gateway Worker auth check be inspected or debugged?** No tooling documented.
+8. ~~**Can the Gateway Worker auth check be inspected or debugged?**~~ **PARTIALLY RESOLVED** — The `powered-by` header reliably indicates whether the request reached the Storefront Worker (`Shopify, Oxygen, Hydrogen`) or was intercepted by the Gateway Worker (`Shopify, Oxygen`).
 9. **Is the shareable link JWT signature key rotatable?** Not documented.
+10. **Does `pullRequestPreviewPublicUrl: true` actually make deployments public?** PR #2 bot posted bare URL (suggesting `true`) but the URL still required OAuth. Need to verify via Shopify Admin whether the setting is currently `true` or was toggled back.
+11. **What is the relationship between storefront password protection and Oxygen preview auth?** These may be separate layers.
 
 ### Key Insights from Source Code
 
@@ -855,3 +1011,127 @@ The bot **always** posts a shareable link. So the `pullRequestPreviewPublicUrl` 
 5. **Environment ordering in interactive prompt**: Preview → Custom → Production (ordered by "safety").
 6. **`UNSAFE_SHOPIFY_HYDROGEN_DEPLOYMENT_URL`** can override the Oxygen service URL for internal testing.
 7. **Oxygen uses Cloudflare Workers for Platforms** — each merchant's storefront runs in a dispatch namespace with V8 isolate isolation in untrusted mode.
+
+---
+
+## 21. Next Steps — Admin Validations Checklist
+
+> Explorations and validations to perform via Shopify Admin UI to resolve remaining unknowns and fully map the auth configuration surface.
+
+### A. Storefront-Level Settings
+
+Navigate to: **Shopify Admin → Hydrogen → [Storefront] → Settings**
+
+#### A1. Oxygen Deployments Section
+
+- [ ] **Verify current `pullRequestPreviewPublicUrl` state** — Is the "Public preview URLs" toggle ON or OFF?
+- [ ] **Toggle OFF → push commit → check bot comment** — Does bot include `?_auth=` token? Does bare URL require auth?
+- [ ] **Toggle ON → push commit → check bot comment** — Does bot post bare URL? Does bare URL work without auth?
+- [ ] **Toggle ON → wait 5 min → test existing deployment bare URL** — Does the toggle retroactively affect already-deployed previews, or only new deployments?
+- [ ] **Verify `pullRequestCommentsEnabled` state** — Is the "PR comments" toggle ON?
+- [ ] **Check if any propagation delay** — Toggle setting and immediately test bare URL. Document time-to-effect.
+
+#### A2. Environment Settings
+
+Navigate to: **Shopify Admin → Hydrogen → [Storefront] → Settings → Environments and Variables**
+
+For **each environment** (Production, Preview, any Custom environments):
+
+- [ ] **Document environment name, handle, branch mapping, and type** (Production/Preview/Custom)
+- [ ] **Check public/private visibility toggle** — Is the environment public or private?
+- [ ] **Toggle environment to Public → test bare URL** — Does the environment URL work without auth?
+- [ ] **Toggle environment back to Private → verify auth returns**
+- [ ] **Check environment variables** — List injected variables (auto-generated vs custom)
+- [ ] **Check if Preview environment has a separate visibility toggle** or if it's solely controlled by `pullRequestPreviewPublicUrl`
+
+#### A3. Storefront Password Protection
+
+Navigate to: **Shopify Admin → Online Store → Preferences** (or Storefront settings)
+
+- [ ] **Is storefront password protection enabled?** — This is a separate layer from Oxygen deployment auth
+- [ ] **Does storefront password affect Oxygen previews?** — Test by disabling storefront password and re-testing bare preview URLs
+- [ ] **Check if Hydrogen storefronts have a separate password gate** from the Liquid storefront password
+
+### B. Deployment-Level Validations
+
+Navigate to: **Shopify Admin → Hydrogen → [Storefront] → Deployments**
+
+#### B1. Individual Deployment Inspection
+
+For PR #1 and PR #2 deployments:
+
+- [ ] **Open deployment details** — Document deployment ID, status, environment, timestamp
+- [ ] **Check "Share" options** — What sharing options are available? (Anyone with link / Staff only)
+- [ ] **Create a manual shareable link** via Admin UI for PR #2 — Does this generate a new JWT?
+- [ ] **Compare manual shareable link JWT** with bot-generated JWT — Same `kind`? Same structure?
+- [ ] **Revoke the shareable link** — Does the old `?_auth=` JWT immediately stop working?
+- [ ] **Test the 30-second propagation delay** — Time between revocation and actual invalidation
+
+#### B2. Deployment Token Management
+
+Navigate to: **Shopify Admin → Hydrogen → [Storefront] → Settings → Storefront API access**
+
+- [ ] **List all deployment tokens** — How many exist? Which is the default?
+- [ ] **Check token expiry dates** — When do current tokens expire?
+- [ ] **Create a new token** — Verify it can deploy independently
+- [ ] **Rotate the default token** — Does this invalidate CI deployments immediately?
+
+### C. GitHub Integration Settings
+
+Navigate to: **Shopify Admin → Hydrogen → [Storefront] → Settings → GitHub**
+
+- [ ] **Verify connected repository** — `juanpprieto/preview-deployments-auth`
+- [ ] **Check GitHub App permissions** — Which accounts have the Shopify GitHub App installed?
+- [ ] **Verify PR comment toggle** — Is it enabled? Can it be toggled without affecting deployment auth?
+- [ ] **Check if there's a branch filter** — Can specific branches be excluded from deployments?
+
+### D. Cross-Cutting Auth Experiments
+
+These experiments test interactions between different auth layers:
+
+#### D1. pullRequestPreviewPublicUrl + Storefront Password
+
+| Test | pullRequestPreviewPublicUrl | Storefront Password | Expected Result |
+|------|---------------------------|--------------------|-----------------|
+| 1 | `true` (public) | Disabled | Bare URL should work |
+| 2 | `true` (public) | Enabled | **UNKNOWN** — does password override Oxygen public setting? |
+| 3 | `false` (auth) | Disabled | Bare URL requires Shopify staff login |
+| 4 | `false` (auth) | Enabled | Bare URL requires Shopify staff login |
+
+#### D2. Public Environment + Preview Auth
+
+- [ ] **Make Preview environment public** (if possible) — Does this override `pullRequestPreviewPublicUrl`?
+- [ ] **Make a Custom environment public** — Verify bare URL access works
+- [ ] **Test shareable link on a public environment** — Does `?_auth=` still work? (Should be a no-op)
+
+#### D3. Auth Bypass Token Experiments
+
+- [ ] **Deploy with `--auth-bypass-token`** — Capture the token from CI output or `h2_deploy_log.json`
+- [ ] **Test auth bypass token via header** — `curl -H "oxygen-auth-bypass-token: <token>" <url>`
+- [ ] **Test auth bypass token after expiry** — Wait for duration to expire, retry
+- [ ] **Test auth bypass token on wrong deployment** — Should fail (deployment-scoped)
+- [ ] **Compare auth bypass JWT structure** with shareable link JWT — Different `kind`? Has `exp`?
+
+#### D4. OAuth Flow Completion
+
+- [ ] **Complete the Shopify OAuth login flow** in browser — Document what cookies are set after successful login
+- [ ] **Test session cookie persistence** — How long does the staff session last?
+- [ ] **Test session cookie cross-deployment** — Does a staff login session work across all deployments for the same store?
+- [ ] **Test session cookie cross-store** — Does it work across different stores?
+
+### E. Network-Level Deep Dive
+
+These require browser DevTools Network panel on a logged-in Shopify Admin session:
+
+- [ ] **Capture the full `SourceCodeProviderUpdate` request** — Toggle `pullRequestPreviewPublicUrl` and capture the exact GraphQL mutation body
+- [ ] **Query current `pullRequestPreviewPublicUrl` value** — Is there a read-only query, or is it only visible in the UI?
+- [ ] **Inspect the `cf-auth-worker.myshopify.dev/oauth/callback`** response — What cookies does it set after successful OAuth?
+- [ ] **Check for `user_session_id` and `mac` cookies** after successful OAuth login — These are the staff session cookies the Gateway Worker checks
+
+### F. Edge Cases to Document
+
+- [ ] **What happens when deployment token expires mid-CI?** — Does the deployment fail gracefully?
+- [ ] **What happens when a PR is closed?** — Is the preview deployment retained? For how long?
+- [ ] **What happens when multiple PRs update the same branch?** — Is the old preview replaced?
+- [ ] **What happens when `pullRequestPreviewPublicUrl` is toggled while a deployment is in progress?**
+- [ ] **Can a non-staff Shopify user (e.g., customer) complete the OAuth flow?** — The scope is `openid email`, not merchant-specific
