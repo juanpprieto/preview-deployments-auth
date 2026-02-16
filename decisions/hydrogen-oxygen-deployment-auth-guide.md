@@ -1493,3 +1493,4 @@ Provide **per-environment/branch easily shareable pre-authenticated links** for 
 - [ ] **Verify token longevity** — Confirm the JWT persists for >24hrs, >1week
 - [ ] **Test what "Reset link" does** — Does it invalidate the old JWT and generate a new one?
 - [ ] **Document the full CI/CD → stakeholder notification flow** — From push → deploy → parse → distribute
+
