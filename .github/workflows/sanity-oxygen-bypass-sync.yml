@@ -1,0 +1,147 @@
+name: Sync Oxygen auth to Sanity
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sync-token:
+    name: Extract and sync token
+    runs-on: ubuntu-latest
+    if: >
+      github.event.comment.user.login == 'shopify[bot]' &&
+      contains(github.event.comment.body, 'Successful') &&
+      github.event.issue.pull_request
+
+    steps:
+      - name: Log trigger
+        run: |
+          echo "=== issue_comment event fired for shopify[bot] ==="
+          echo "PR: #${{ github.event.issue.number }}"
+          echo "Comment author: ${{ github.event.comment.user.login }}"
+
+      - name: Extract token
+        id: extract
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          # Extract deployment URL
+          DEPLOY_URL=$(echo "$COMMENT_BODY" | grep -o 'https://[a-z0-9-]*\.myshopify\.dev' | head -1)
+          echo "deploy_url=$DEPLOY_URL" >> $GITHUB_OUTPUT
+          echo "Extracted URL: $DEPLOY_URL"
+
+          # Extract USER_SHARED token
+          AUTH_TOKEN=$(echo "$COMMENT_BODY" | grep -o '_auth=[^)]*' | head -1 | sed 's/_auth=//')
+          echo "::add-mask::$AUTH_TOKEN"
+          echo "auth_token=$AUTH_TOKEN" >> $GITHUB_OUTPUT
+          echo "Token length: ${#AUTH_TOKEN}"
+
+          # Validate token kind
+          PAYLOAD=$(echo "$AUTH_TOKEN" | cut -d. -f2)
+          MOD=$((${#PAYLOAD} % 4))
+          if [ $MOD -eq 2 ]; then PAYLOAD="${PAYLOAD}=="; elif [ $MOD -eq 3 ]; then PAYLOAD="${PAYLOAD}="; fi
+          TOKEN_KIND=$(echo "$PAYLOAD" | base64 -d 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('kind','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
+          echo "token_kind=$TOKEN_KIND" >> $GITHUB_OUTPUT
+          echo "Token kind: $TOKEN_KIND"
+
+      - name: Verify token works
+        env:
+          DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
+          AUTH_TOKEN: ${{ steps.extract.outputs.auth_token }}
+        run: |
+          if [ -z "$DEPLOY_URL" ] || [ -z "$AUTH_TOKEN" ]; then
+            echo "ERROR: Missing URL or token"
+            exit 1
+          fi
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "${DEPLOY_URL}?_auth=${AUTH_TOKEN}")
+          echo "Token verification: HTTP $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "WARNING: Token did not return 200"
+          fi
+
+      - name: Save as artifact
+        env:
+          DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
+          AUTH_TOKEN: ${{ steps.extract.outputs.auth_token }}
+          TOKEN_KIND: ${{ steps.extract.outputs.token_kind }}
+        run: |
+          mkdir -p /tmp/oxygen-bypass
+          cat > /tmp/oxygen-bypass/token.json << ARTIFACT_EOF
+          {
+            "deploymentUrl": "$DEPLOY_URL",
+            "authToken": "$AUTH_TOKEN",
+            "tokenKind": "$TOKEN_KIND",
+            "pr": ${{ github.event.issue.number }},
+            "extractedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          ARTIFACT_EOF
+          echo "Artifact contents:"
+          cat /tmp/oxygen-bypass/token.json
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxygen-bypass-token
+          path: /tmp/oxygen-bypass/token.json
+          retention-days: 90
+
+      - name: Patch Sanity bypass document
+        env:
+          DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
+          AUTH_TOKEN: ${{ steps.extract.outputs.auth_token }}
+          TOKEN_KIND: ${{ steps.extract.outputs.token_kind }}
+          SANITY_WRITE_TOKEN: ${{ secrets.SANITY_API_WRITE_TOKEN }}
+        run: |
+          if [ -z "$SANITY_WRITE_TOKEN" ]; then
+            echo "WARNING: SANITY_API_WRITE_TOKEN secret not set, skipping Sanity patch"
+            exit 0
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg url "$DEPLOY_URL" \
+            --arg token "$AUTH_TOKEN" \
+            --arg kind "$TOKEN_KIND" \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{mutations: [{createOrReplace: {
+              _id: "oxygen-bypass.staging",
+              _type: "sanity.oxygenProtectionBypass",
+              name: "Staging",
+              deploymentUrl: $url,
+              authToken: $token,
+              branch: "staging",
+              tokenKind: $kind,
+              updatedAt: $ts
+            }}]}')
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://sx997gpv.api.sanity.io/v2021-06-07/data/mutate/production" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SANITY_WRITE_TOKEN" \
+            -d "$PAYLOAD")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "Sanity API response: HTTP $HTTP_CODE"
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: Failed to patch Sanity document"
+            exit 1
+          fi
+          echo "Successfully updated oxygen-bypass.staging in Sanity"
+
+      - name: Summary
+        env:
+          DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
+          TOKEN_KIND: ${{ steps.extract.outputs.token_kind }}
+        run: |
+          echo "=== Sync Summary ==="
+          echo "PR: #${{ github.event.issue.number }}"
+          echo "Deploy URL: $DEPLOY_URL"
+          echo "Token kind: $TOKEN_KIND"
+          echo "Sanity doc: oxygen-bypass.staging patched"
