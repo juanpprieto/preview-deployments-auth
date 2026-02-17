@@ -36,6 +36,49 @@ jobs:
         run: npm ci
 
       - name: Build and Publish to Oxygen
-        run: npx shopify hydrogen deploy
+        run: npx shopify hydrogen deploy --auth-bypass-token --auth-bypass-token-duration 12
         env:
           SHOPIFY_HYDROGEN_DEPLOYMENT_TOKEN: ${{ secrets.OXYGEN_DEPLOYMENT_TOKEN_1000099369 }}
+
+      - name: Test auth bypass token as URL parameter
+        if: always()
+        run: |
+          DEPLOY_URL=$(jq -r '.url // empty' h2_deploy_log.json 2>/dev/null)
+          AUTH_TOKEN=$(jq -r '.authBypassToken // empty' h2_deploy_log.json 2>/dev/null)
+
+          if [ -z "$DEPLOY_URL" ] || [ -z "$AUTH_TOKEN" ]; then
+            echo "ERROR: Missing deployment URL or auth token"
+            cat h2_deploy_log.json 2>/dev/null || echo "No h2_deploy_log.json"
+            exit 1
+          fi
+
+          echo "Deployment URL: $DEPLOY_URL"
+          echo "Token length: ${#AUTH_TOKEN}"
+
+          echo ""
+          echo "=== Test 1: Bare URL (expect 302) ==="
+          BARE_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "$DEPLOY_URL")
+          echo "Status: $BARE_STATUS"
+
+          echo ""
+          echo "=== Test 2: URL with ?_auth= bypass token (key test) ==="
+          AUTH_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "${DEPLOY_URL}?_auth=${AUTH_TOKEN}")
+          echo "Status: $AUTH_STATUS"
+
+          echo ""
+          echo "=== Test 3: Header-based auth bypass token ==="
+          HEADER_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -H "oxygen-auth-bypass-token: ${AUTH_TOKEN}" "$DEPLOY_URL")
+          echo "Status: $HEADER_STATUS"
+
+          echo ""
+          echo "=== RESULTS ==="
+          echo "Bare URL:          $BARE_STATUS (expect 302)"
+          echo "?_auth= parameter: $AUTH_STATUS (KEY TEST - 200 means it works as URL param)"
+          echo "Header bypass:     $HEADER_STATUS (expect 200)"
+
+      - name: Upload deployment log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h2-deploy-log
+          path: h2_deploy_log.json
