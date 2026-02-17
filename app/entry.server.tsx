@@ -19,6 +19,13 @@ export default async function handleRequest(
       checkoutDomain: context.env.PUBLIC_CHECKOUT_DOMAIN,
       storeDomain: context.env.PUBLIC_STORE_DOMAIN,
     },
+    // Always allow Sanity Studio to iframe this app — the initial iframe load
+    // happens BEFORE the preview cookie is set, so this cannot be conditional
+    frameAncestors: ["'self'", 'https://*.sanity.studio'],
+    connectSrc: [
+      'https://sx997gpv.api.sanity.io',
+      'wss://sx997gpv.api.sanity.io',
+    ],
   });
 
   const body = await renderToReadableStream(
