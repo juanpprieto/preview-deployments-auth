@@ -184,12 +184,7 @@ export default function App() {
   // Skip Analytics.Provider in preview mode — consent tracking scripts
   // get blocked inside the cross-origin Studio iframe, crashing React
   if (data.preview) {
-    return (
-      <>
-        {content}
-        <VisualEditing />
-      </>
-    );
+    return <>{content}</>;
   }
 
   return (
