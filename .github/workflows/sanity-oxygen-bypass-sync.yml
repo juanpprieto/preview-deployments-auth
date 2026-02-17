@@ -90,6 +90,51 @@ jobs:
           path: /tmp/oxygen-bypass/token.json
           retention-days: 90
 
+      - name: Patch Sanity bypass document
+        env:
+          DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
+          AUTH_TOKEN: ${{ steps.extract.outputs.auth_token }}
+          TOKEN_KIND: ${{ steps.extract.outputs.token_kind }}
+          SANITY_WRITE_TOKEN: ${{ secrets.SANITY_API_WRITE_TOKEN }}
+        run: |
+          if [ -z "$SANITY_WRITE_TOKEN" ]; then
+            echo "WARNING: SANITY_API_WRITE_TOKEN secret not set, skipping Sanity patch"
+            exit 0
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg url "$DEPLOY_URL" \
+            --arg token "$AUTH_TOKEN" \
+            --arg kind "$TOKEN_KIND" \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{mutations: [{createOrReplace: {
+              _id: "oxygen-bypass.staging",
+              _type: "sanity.oxygenProtectionBypass",
+              name: "Staging",
+              deploymentUrl: $url,
+              authToken: $token,
+              branch: "staging",
+              tokenKind: $kind,
+              updatedAt: $ts
+            }}]}')
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://sx997gpv.api.sanity.io/v2021-06-07/data/mutate/production" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SANITY_WRITE_TOKEN" \
+            -d "$PAYLOAD")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "Sanity API response: HTTP $HTTP_CODE"
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: Failed to patch Sanity document"
+            exit 1
+          fi
+          echo "Successfully updated oxygen-bypass.staging in Sanity"
+
       - name: Summary
         env:
           DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
@@ -99,5 +144,4 @@ jobs:
           echo "PR: #${{ github.event.issue.number }}"
           echo "Deploy URL: $DEPLOY_URL"
           echo "Token kind: $TOKEN_KIND"
-          echo ""
-          echo "Next: add SANITY_API_WRITE_TOKEN secret to patch Sanity document"
+          echo "Sanity doc: oxygen-bypass.staging patched"
