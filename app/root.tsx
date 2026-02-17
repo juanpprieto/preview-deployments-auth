@@ -10,12 +10,14 @@ import {
   ScrollRestoration,
   useRouteLoaderData,
 } from 'react-router';
+import {VisualEditing} from '@sanity/visual-editing/react-router';
 import type {Route} from './+types/root';
 import favicon from '~/assets/favicon.svg';
 import {FOOTER_QUERY, HEADER_QUERY} from '~/lib/fragments';
 import resetStyles from '~/styles/reset.css?url';
 import appStyles from '~/styles/app.css?url';
 import {PageLayout} from './components/PageLayout';
+import {getPreviewData} from '~/sanity/session';
 
 export type RootLoader = typeof loader;
 
@@ -73,10 +75,13 @@ export async function loader(args: Route.LoaderArgs) {
   const criticalData = await loadCriticalData(args);
 
   const {storefront, env} = args.context;
+  const sessionSecret = env.SESSION_SECRET || 'dev-secret-change-me';
+  const {preview} = await getPreviewData(args.request, sessionSecret);
 
   return {
     ...deferredData,
     ...criticalData,
+    preview,
     publicStoreDomain: env.PUBLIC_STORE_DOMAIN,
     shop: getShopAnalytics({
       storefront,
@@ -179,6 +184,7 @@ export default function App() {
       <PageLayout {...data}>
         <Outlet />
       </PageLayout>
+      {data.preview && <VisualEditing />}
     </Analytics.Provider>
   );
 }
