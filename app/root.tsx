@@ -10,7 +10,7 @@ import {
   ScrollRestoration,
   useRouteLoaderData,
 } from 'react-router';
-import {VisualEditing} from '@sanity/visual-editing/react-router';
+import {lazy, Suspense} from 'react';
 import type {Route} from './+types/root';
 import favicon from '~/assets/favicon.svg';
 import {FOOTER_QUERY, HEADER_QUERY} from '~/lib/fragments';
@@ -18,6 +18,20 @@ import resetStyles from '~/styles/reset.css?url';
 import appStyles from '~/styles/app.css?url';
 import {PageLayout} from './components/PageLayout';
 import {getPreviewData} from '~/sanity/session';
+
+const VisualEditingLazy = lazy(() =>
+  import('@sanity/visual-editing/react-router').then((mod) => ({
+    default: mod.VisualEditing,
+  })),
+);
+
+function LazyVisualEditing() {
+  return (
+    <Suspense fallback={null}>
+      <VisualEditingLazy />
+    </Suspense>
+  );
+}
 
 export type RootLoader = typeof loader;
 
@@ -184,7 +198,7 @@ export default function App() {
       <PageLayout {...data}>
         <Outlet />
       </PageLayout>
-      {data.preview && <VisualEditing />}
+      {data.preview && <LazyVisualEditing />}
     </Analytics.Provider>
   );
 }
