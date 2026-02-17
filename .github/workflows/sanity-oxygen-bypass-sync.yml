@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event.comment.user.login == 'shopify[bot]' &&
-      contains(github.event.comment.body, '✅ Successful') &&
+      contains(github.event.comment.body, 'Successful') &&
       github.event.issue.pull_request
 
     steps:
@@ -23,17 +23,81 @@ jobs:
           echo "=== issue_comment event fired for shopify[bot] ==="
           echo "PR: #${{ github.event.issue.number }}"
           echo "Comment author: ${{ github.event.comment.user.login }}"
-          echo "Comment author type: ${{ github.event.comment.user.type }}"
-          echo "Body preview: $(echo '${{ github.event.comment.body }}' | head -c 200)"
 
       - name: Extract token
         id: extract
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          BODY='${{ github.event.comment.body }}'
-          DEPLOY_URL=$(echo "$BODY" | sed -n 's/.*(\(https:\/\/[a-z0-9-]*\.myshopify\.dev\)?.*/\1/p' | head -1)
-          AUTH_TOKEN=$(echo "$BODY" | sed -n 's/.*_auth=\([^)]*\).*/\1/p' | head -1)
+          # Extract deployment URL
+          DEPLOY_URL=$(echo "$COMMENT_BODY" | grep -o 'https://[a-z0-9-]*\.myshopify\.dev' | head -1)
           echo "deploy_url=$DEPLOY_URL" >> $GITHUB_OUTPUT
+          echo "Extracted URL: $DEPLOY_URL"
+
+          # Extract USER_SHARED token
+          AUTH_TOKEN=$(echo "$COMMENT_BODY" | grep -o '_auth=[^)]*' | head -1 | sed 's/_auth=//')
           echo "::add-mask::$AUTH_TOKEN"
           echo "auth_token=$AUTH_TOKEN" >> $GITHUB_OUTPUT
-          echo "Extracted URL: $DEPLOY_URL"
           echo "Token length: ${#AUTH_TOKEN}"
+
+          # Validate token kind
+          PAYLOAD=$(echo "$AUTH_TOKEN" | cut -d. -f2)
+          MOD=$((${#PAYLOAD} % 4))
+          if [ $MOD -eq 2 ]; then PAYLOAD="${PAYLOAD}=="; elif [ $MOD -eq 3 ]; then PAYLOAD="${PAYLOAD}="; fi
+          TOKEN_KIND=$(echo "$PAYLOAD" | base64 -d 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('kind','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
+          echo "token_kind=$TOKEN_KIND" >> $GITHUB_OUTPUT
+          echo "Token kind: $TOKEN_KIND"
+
+      - name: Verify token works
+        env:
+          DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
+          AUTH_TOKEN: ${{ steps.extract.outputs.auth_token }}
+        run: |
+          if [ -z "$DEPLOY_URL" ] || [ -z "$AUTH_TOKEN" ]; then
+            echo "ERROR: Missing URL or token"
+            exit 1
+          fi
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "${DEPLOY_URL}?_auth=${AUTH_TOKEN}")
+          echo "Token verification: HTTP $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "WARNING: Token did not return 200"
+          fi
+
+      - name: Save as artifact
+        env:
+          DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
+          AUTH_TOKEN: ${{ steps.extract.outputs.auth_token }}
+          TOKEN_KIND: ${{ steps.extract.outputs.token_kind }}
+        run: |
+          mkdir -p /tmp/oxygen-bypass
+          cat > /tmp/oxygen-bypass/token.json << ARTIFACT_EOF
+          {
+            "deploymentUrl": "$DEPLOY_URL",
+            "authToken": "$AUTH_TOKEN",
+            "tokenKind": "$TOKEN_KIND",
+            "pr": ${{ github.event.issue.number }},
+            "extractedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          ARTIFACT_EOF
+          echo "Artifact contents:"
+          cat /tmp/oxygen-bypass/token.json
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxygen-bypass-token
+          path: /tmp/oxygen-bypass/token.json
+          retention-days: 90
+
+      - name: Summary
+        env:
+          DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
+          TOKEN_KIND: ${{ steps.extract.outputs.token_kind }}
+        run: |
+          echo "=== Sync Summary ==="
+          echo "PR: #${{ github.event.issue.number }}"
+          echo "Deploy URL: $DEPLOY_URL"
+          echo "Token kind: $TOKEN_KIND"
+          echo ""
+          echo "Next: add SANITY_API_WRITE_TOKEN secret to patch Sanity document"
