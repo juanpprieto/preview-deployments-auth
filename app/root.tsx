@@ -175,16 +175,30 @@ export default function App() {
     return <Outlet />;
   }
 
+  const content = (
+    <PageLayout {...data}>
+      <Outlet />
+    </PageLayout>
+  );
+
+  // Skip Analytics.Provider in preview mode — consent tracking scripts
+  // get blocked inside the cross-origin Studio iframe, crashing React
+  if (data.preview) {
+    return (
+      <>
+        {content}
+        <VisualEditing />
+      </>
+    );
+  }
+
   return (
     <Analytics.Provider
       cart={data.cart}
       shop={data.shop}
       consent={data.consent}
     >
-      <PageLayout {...data}>
-        <Outlet />
-      </PageLayout>
-      {data.preview && <VisualEditing />}
+      {content}
     </Analytics.Provider>
   );
 }
