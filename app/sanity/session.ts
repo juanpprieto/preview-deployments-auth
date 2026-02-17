@@ -1,26 +1,27 @@
 import {createCookieSessionStorage} from 'react-router'
 import type {loadQuery} from '@sanity/react-loader'
 
-const {getSession, commitSession, destroySession} =
-  createCookieSessionStorage({
+export function createPreviewSessionStorage(secret: string) {
+  return createCookieSessionStorage({
     cookie: {
       httpOnly: true,
       name: '__sanity_preview',
       path: '/',
       sameSite: 'none',
-      secrets: [
-        typeof process !== 'undefined'
-          ? process.env.SESSION_SECRET || 'dev-secret-change-me'
-          : 'dev-secret-change-me',
-      ],
+      secrets: [secret],
       secure: true,
     },
   })
+}
 
-export async function getPreviewData(request: Request): Promise<{
+export async function getPreviewData(
+  request: Request,
+  secret: string,
+): Promise<{
   preview: boolean
   options: Parameters<typeof loadQuery>[2]
 }> {
+  const {getSession} = createPreviewSessionStorage(secret)
   const session = await getSession(request.headers.get('Cookie'))
   const preview = session.get('previewMode') || false
   return {
@@ -38,5 +39,3 @@ export async function getPreviewData(request: Request): Promise<{
         },
   }
 }
-
-export {commitSession, destroySession, getSession, getPreviewData as default}

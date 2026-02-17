@@ -5,3 +5,10 @@
 
 // Enhance TypeScript's built-in typings.
 import '@total-typescript/ts-reset';
+
+declare global {
+  interface Env {
+    SANITY_API_READ_TOKEN: string
+    SESSION_SECRET: string
+  }
+}
