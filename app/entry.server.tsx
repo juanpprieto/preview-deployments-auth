@@ -14,19 +14,14 @@ export default async function handleRequest(
   reactRouterContext: EntryContext,
   context: HydrogenRouterContextProvider,
 ) {
-  // Check if preview mode is active via cookie
-  const previewCookie = request.headers.get('Cookie') || '';
-  const isPreviewMode = previewCookie.includes('__sanity_preview');
-
   const {nonce, header, NonceProvider} = createContentSecurityPolicy({
     shop: {
       checkoutDomain: context.env.PUBLIC_CHECKOUT_DOMAIN,
       storeDomain: context.env.PUBLIC_STORE_DOMAIN,
     },
-    // Allow Sanity Studio to iframe this app when preview mode is active
-    frameAncestors: isPreviewMode
-      ? ["'self'", 'https://*.sanity.studio']
-      : undefined,
+    // Always allow Sanity Studio to iframe this app — the initial iframe load
+    // happens BEFORE the preview cookie is set, so this cannot be conditional
+    frameAncestors: ["'self'", 'https://*.sanity.studio'],
     connectSrc: [
       'https://sx997gpv.api.sanity.io',
       'wss://sx997gpv.api.sanity.io',
