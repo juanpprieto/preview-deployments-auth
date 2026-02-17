@@ -1,3 +1,4 @@
+import {useState, useEffect} from 'react';
 import {Analytics, getShopAnalytics, useNonce} from '@shopify/hydrogen';
 import {
   Outlet,
@@ -18,6 +19,12 @@ import appStyles from '~/styles/app.css?url';
 import {PageLayout} from './components/PageLayout';
 import {VisualEditing} from 'hydrogen-sanity/visual-editing';
 import {getPreviewData} from '~/sanity/session';
+
+function ClientOnly({children}: {children: React.ReactNode}) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  return mounted ? <>{children}</> : null;
+}
 
 export type RootLoader = typeof loader;
 
@@ -184,7 +191,14 @@ export default function App() {
   // Skip Analytics.Provider in preview mode — consent tracking scripts
   // get blocked inside the cross-origin Studio iframe, crashing React
   if (data.preview) {
-    return <>{content}</>;
+    return (
+      <>
+        {content}
+        <ClientOnly>
+          <VisualEditing />
+        </ClientOnly>
+      </>
+    );
   }
 
   return (
