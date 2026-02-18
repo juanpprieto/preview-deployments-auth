@@ -1,4 +1,49 @@
+# =============================================================================
+# Hydrogen → Oxygen Deployment (Storefront 1000099369)
+# =============================================================================
+#
+# PURPOSE:
+#   Builds and deploys the Hydrogen storefront to Shopify Oxygen on every push.
+#   Generates an auth bypass token so private environments (staging, dev) can be
+#   accessed via URL parameter (?_auth=TOKEN) or HTTP header.
+#
+# MULTI-ENVIRONMENT STRATEGY:
+#   Branch  →  Oxygen Environment  →  Sanity Dataset  →  Visibility
+#   ─────────────────────────────────────────────────────────────────
+#   main     →  Production           →  production       →  Public (no auth needed)
+#   staging  →  Staging              →  staging          →  Private (auth required)
+#   dev      →  Dev                  →  dev              →  Private (auth required)
+#   *        →  Preview              →  staging          →  Private (auth required)
+#
+# DATASET SELECTION (RUNTIME):
+#   Each Oxygen environment has SANITY_DATASET set as a runtime env var
+#   in Shopify admin (Settings → Environments → Environment Variables).
+#   The Hydrogen app reads `env.SANITY_DATASET` at runtime to select
+#   the correct Sanity dataset. No build-time injection needed.
+#
+# AUTH BYPASS TOKENS (two types):
+#   - TESTING_AUTOMATION (--auth-bypass-token): Has `exp`, max 12h. Written to
+#     h2_deploy_log.json. Used for CI smoke tests only — NOT synced to Sanity.
+#   - USER_SHARED (shopify[bot] PR comment): No `exp`, no time-based expiry.
+#     Deployment-scoped only. THIS is what the sync workflow syncs to Sanity.
+#     Validated at 56h+ still returning HTTP 200.
+#   Both work as ?_auth= URL param or oxygen-auth-bypass-token header.
+#   See: decisions/sanity-presentation-oxygen-auth.md → "USER_SHARED Token Longevity"
+#
+# COMPANION WORKFLOWS:
+#   - sanity-oxygen-bypass-sync.yml: Reads shopify[bot] PR comment → writes
+#     token to Sanity so Studio Presentation tool can load the preview iframe
+#
+# SEE ALSO:
+#   - decisions/sanity-presentation-oxygen-auth.md (full architecture doc)
+#   - decisions/hydrogen-oxygen-deployment-auth-guide.md (Oxygen auth deep-dive)
+# =============================================================================
+
 name: Storefront 1000099369
+
+# Deploy on every push to any branch.
+# Oxygen environment routing is handled by Shopify based on branch mapping
+# configured in the Shopify admin (Settings → Environments).
 on: [push]
 
 permissions:
@@ -35,11 +80,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # ── Build and deploy to Oxygen ─────────────────────────────────────
+      # --auth-bypass-token: Generates a JWT for accessing private deployments.
+      #   The token is written to h2_deploy_log.json and also included in
+      #   shopify[bot]'s PR comment (used by the sync workflow).
+      # --auth-bypass-token-duration 12: Max allowed is 12 hours.
+      # SANITY_DATASET: Set per Oxygen environment in Shopify admin.
+      #   The Hydrogen app reads env.SANITY_DATASET at runtime (NOT build-time).
       - name: Build and Publish to Oxygen
         run: npx shopify hydrogen deploy --auth-bypass-token --auth-bypass-token-duration 12
         env:
           SHOPIFY_HYDROGEN_DEPLOYMENT_TOKEN: ${{ secrets.OXYGEN_DEPLOYMENT_TOKEN_1000099369 }}
 
+      # ── Smoke test: verify auth bypass works via all methods ───────────
+      # Reads deployment URL + token from h2_deploy_log.json (written by hydrogen deploy).
+      # Tests three access methods:
+      #   1. Bare URL (should 302 redirect to Shopify login for private envs)
+      #   2. ?_auth= URL parameter (the method used by Studio iframe)
+      #   3. oxygen-auth-bypass-token header (alternative for programmatic access)
+      # Runs even if deploy step fails (if: always()) to help debug partial failures.
       - name: Test auth bypass token as URL parameter
         if: always()
         run: |
@@ -56,7 +115,7 @@ jobs:
           echo "Token length: ${#AUTH_TOKEN}"
 
           echo ""
-          echo "=== Test 1: Bare URL (expect 302) ==="
+          echo "=== Test 1: Bare URL (expect 302 for private, 200 for public) ==="
           BARE_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "$DEPLOY_URL")
           echo "Status: $BARE_STATUS"
 
@@ -72,10 +131,13 @@ jobs:
 
           echo ""
           echo "=== RESULTS ==="
-          echo "Bare URL:          $BARE_STATUS (expect 302)"
+          echo "Bare URL:          $BARE_STATUS (expect 302 for private, 200 for public)"
           echo "?_auth= parameter: $AUTH_STATUS (KEY TEST - 200 means it works as URL param)"
           echo "Header bypass:     $HEADER_STATUS (expect 200)"
 
+      # ── Upload deploy log for debugging ────────────────────────────────
+      # h2_deploy_log.json contains: url, authBypassToken, environmentName, etc.
+      # Useful for debugging token issues or verifying deployment targets.
       - name: Upload deployment log
         if: always()
         uses: actions/upload-artifact@v4

@@ -75,9 +75,9 @@ function loadDeferredData({context}: Route.LoaderArgs) {
 function extractText(
   blocks?: Array<{children: Array<{text: string}>}>,
 ): string {
-  if (!blocks) return '';
+  if (!blocks || !Array.isArray(blocks)) return '';
   return blocks
-    .flatMap((block) => block.children.map((child) => child.text))
+    .flatMap((block) => block.children?.map((child) => child.text) ?? [])
     .join(' ');
 }
 
