@@ -9,63 +9,55 @@ export const action = _action;
 export const loader: typeof _loader = async (args) => {
   const {context, request} = args;
   const sanity = (context as any).sanity;
-
-  const config = sanity?.client?.config?.() ?? {};
-  console.log('[preview-debug] === Preview Mode Enable ===');
-  console.log('[preview-debug] Request URL:', request.url);
-  console.log('[preview-debug] Dataset:', config.dataset);
-  console.log('[preview-debug] ProjectId:', config.projectId);
-  console.log('[preview-debug] Has preview token:', !!sanity?.preview?.token);
-  console.log(
-    '[preview-debug] Token prefix:',
-    sanity?.preview?.token?.substring(0, 12) + '...',
-  );
-
-  // Extract the sanity-preview-secret from URL for logging
   const url = new URL(request.url, 'http://localhost');
-  const secret = url.searchParams.get('sanity-preview-secret');
-  console.log('[preview-debug] Has sanity-preview-secret:', !!secret);
-  console.log(
-    '[preview-debug] Secret prefix:',
-    secret?.substring(0, 12) + '...',
-  );
 
-  // Manual validation for debug - query Sanity directly
-  if (sanity?.preview?.token) {
-    try {
-      const clientWithToken = sanity.client.withConfig({
-        useCdn: false,
-        token: sanity.preview.token,
-        perspective: 'raw' as const,
-        apiVersion: '2025-02-19',
-        stega: false,
-      });
-      // Check if we can read ANY previewUrlSecret docs
-      const allSecrets = await clientWithToken.fetch(
-        `*[_type == "sanity.previewUrlSecret"]{_id, _updatedAt, secret}`,
-      );
-      console.log(
-        '[preview-debug] All previewUrlSecret docs in dataset:',
-        JSON.stringify(
-          allSecrets?.map((d: any) => ({
-            _id: d._id,
-            _updatedAt: d._updatedAt,
-            secretPrefix: d.secret?.substring(0, 12),
-          })),
-        ),
-      );
+  // If ?_debug=1 is present, return diagnostic JSON instead of normal flow
+  if (url.searchParams.get('_debug') === '1') {
+    const config = sanity?.client?.config?.() ?? {};
+    const secret = url.searchParams.get('sanity-preview-secret');
+    const debug: Record<string, unknown> = {
+      dataset: config.dataset,
+      projectId: config.projectId,
+      hasPreviewToken: !!sanity?.preview?.token,
+      tokenPrefix: sanity?.preview?.token?.substring(0, 12) + '...',
+      hasSecret: !!secret,
+      secretValue: secret,
+    };
 
-      // Now try the actual validation
-      const result = await validatePreviewUrl(clientWithToken, request.url);
-      console.log(
-        '[preview-debug] Manual validatePreviewUrl:',
-        JSON.stringify(result),
-      );
-    } catch (err) {
-      console.error('[preview-debug] Debug validation error:', err);
+    if (sanity?.preview?.token) {
+      try {
+        const clientWithToken = sanity.client.withConfig({
+          useCdn: false,
+          token: sanity.preview.token,
+          perspective: 'raw' as const,
+          apiVersion: '2025-02-19',
+          stega: false,
+        });
+
+        // Fetch all previewUrlSecret docs in this dataset
+        const allSecrets = await clientWithToken.fetch(
+          `*[_type == "sanity.previewUrlSecret"]{_id, _updatedAt, secret, studioUrl}`,
+        );
+        debug.secretDocsInDataset = allSecrets?.map((d: any) => ({
+          _id: d._id,
+          _updatedAt: d._updatedAt,
+          secret: d.secret,
+          studioUrl: d.studioUrl,
+        }));
+
+        // Try validation
+        const result = await validatePreviewUrl(clientWithToken, request.url);
+        debug.validateResult = result;
+      } catch (err: any) {
+        debug.validationError = err?.message || String(err);
+      }
     }
+
+    return new Response(JSON.stringify(debug, null, 2), {
+      headers: {'Content-Type': 'application/json'},
+    });
   }
 
-  // Delegate to the real loader
+  // Normal flow
   return _loader(args);
 };
