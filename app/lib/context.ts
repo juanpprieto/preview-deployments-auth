@@ -5,6 +5,29 @@ import {createSanityContext, type SanityContext} from 'hydrogen-sanity';
 import {PreviewSession} from 'hydrogen-sanity/preview/session';
 
 /**
+ * Resolves the Sanity dataset from Oxygen environment variables.
+ *
+ * Oxygen does NOT allow the same env var name to have different values
+ * across environments. So each environment gets its own named var:
+ *   Production → SANITY_DATASET_PRODUCTION=production
+ *   Staging    → SANITY_DATASET_STAGING=staging
+ *   Preview    → SANITY_DATASET_PREVIEW=staging
+ *   Dev        → SANITY_DATASET_DEV=dev
+ *
+ * Only the var scoped to the current environment will be defined at runtime.
+ * We try all of them; the first truthy one wins.
+ */
+function resolveSanityDataset(env: Env): string {
+  return (
+    env.SANITY_DATASET_PREVIEW ||
+    env.SANITY_DATASET_STAGING ||
+    env.SANITY_DATASET_PRODUCTION ||
+    env.SANITY_DATASET_DEV ||
+    'production'
+  );
+}
+
+/**
  * Creates Hydrogen context for React Router 7.9.x
  * Returns HydrogenRouterContextProvider with hybrid access patterns
  * */
@@ -30,7 +53,7 @@ export async function createHydrogenRouterContext(
     waitUntil,
     client: {
       projectId: env.SANITY_PROJECT_ID || 'sx997gpv',
-      dataset: env.SANITY_DATASET || 'production',
+      dataset: resolveSanityDataset(env),
       apiVersion: '2025-02-19',
       useCdn: true,
       stega: {
