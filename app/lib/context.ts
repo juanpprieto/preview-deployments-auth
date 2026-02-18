@@ -57,6 +57,8 @@ export async function createHydrogenRouterContext(
       projectId: env.SANITY_PROJECT_ID || 'sx997gpv',
       dataset,
       apiVersion: '2025-02-19',
+      // All datasets must have public ACL for CDN queries to work without a
+      // token. The preview.token is only sent when preview mode is active.
       useCdn: true,
       stega: {
         enabled: true,
