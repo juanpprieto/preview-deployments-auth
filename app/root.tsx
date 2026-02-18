@@ -201,7 +201,7 @@ export default function App() {
       <>
         {content}
         <ClientOnly>
-          <VisualEditing />
+          <VisualEditing action="/api/preview-mode/enable" />
         </ClientOnly>
       </>
     );
