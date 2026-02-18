@@ -35,10 +35,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Resolve Sanity dataset from branch
+        id: sanity-env
+        run: |
+          case "${{ github.ref_name }}" in
+            main)    echo "dataset=production" >> $GITHUB_OUTPUT ;;
+            staging) echo "dataset=staging" >> $GITHUB_OUTPUT ;;
+            dev)     echo "dataset=dev" >> $GITHUB_OUTPUT ;;
+            *)       echo "dataset=staging" >> $GITHUB_OUTPUT ;;
+          esac
+          echo "Branch: ${{ github.ref_name }} → Dataset: $(grep dataset $GITHUB_OUTPUT | cut -d= -f2)"
+
       - name: Build and Publish to Oxygen
         run: npx shopify hydrogen deploy --auth-bypass-token --auth-bypass-token-duration 12
         env:
           SHOPIFY_HYDROGEN_DEPLOYMENT_TOKEN: ${{ secrets.OXYGEN_DEPLOYMENT_TOKEN_1000099369 }}
+          VITE_SANITY_DATASET: ${{ steps.sanity-env.outputs.dataset }}
 
       - name: Test auth bypass token as URL parameter
         if: always()
