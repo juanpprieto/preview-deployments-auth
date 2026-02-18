@@ -15,12 +15,11 @@
 #   dev      →  Dev                  →  dev              →  Private (auth required)
 #   *        →  Preview              →  staging          →  Private (auth required)
 #
-# DATASET INJECTION (BUILD-TIME):
-#   Shopify Oxygen does NOT support per-environment runtime env vars with the
-#   same name. Instead, we inject the dataset at BUILD TIME via the VITE_SANITY_DATASET
-#   env var. Vite bakes `import.meta.env.VITE_SANITY_DATASET` into the bundle.
-#   This means the dataset is frozen at deploy time — which is correct behavior
-#   since each Oxygen environment maps to exactly one Sanity dataset.
+# DATASET SELECTION (RUNTIME):
+#   Each Oxygen environment has SANITY_DATASET set as a runtime env var
+#   in Shopify admin (Settings → Environments → Environment Variables).
+#   The Hydrogen app reads `env.SANITY_DATASET` at runtime to select
+#   the correct Sanity dataset. No build-time injection needed.
 #
 # AUTH BYPASS TOKENS (two types):
 #   - TESTING_AUTOMATION (--auth-bypass-token): Has `exp`, max 12h. Written to
@@ -81,34 +80,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # ── Resolve Sanity dataset from branch name ────────────────────────
-      # Maps the current branch to the corresponding Sanity dataset.
-      # This value is injected as VITE_SANITY_DATASET at build time so that
-      # the Hydrogen app reads from the correct dataset per environment.
-      # Unknown/feature branches default to 'staging' for safe preview testing.
-      - name: Resolve Sanity dataset from branch
-        id: sanity-env
-        run: |
-          case "${{ github.ref_name }}" in
-            main)    echo "dataset=production" >> $GITHUB_OUTPUT ;;
-            staging) echo "dataset=staging" >> $GITHUB_OUTPUT ;;
-            dev)     echo "dataset=dev" >> $GITHUB_OUTPUT ;;
-            *)       echo "dataset=staging" >> $GITHUB_OUTPUT ;;
-          esac
-          echo "Branch: ${{ github.ref_name }} → Dataset: $(grep dataset $GITHUB_OUTPUT | cut -d= -f2)"
-
       # ── Build and deploy to Oxygen ─────────────────────────────────────
       # --auth-bypass-token: Generates a JWT for accessing private deployments.
       #   The token is written to h2_deploy_log.json and also included in
       #   shopify[bot]'s PR comment (used by the sync workflow).
       # --auth-bypass-token-duration 12: Max allowed is 12 hours.
-      # VITE_SANITY_DATASET: Injected at build time by Vite.
-      #   In the Hydrogen app, accessed via import.meta.env.VITE_SANITY_DATASET.
+      # SANITY_DATASET: Set per Oxygen environment in Shopify admin.
+      #   The Hydrogen app reads env.SANITY_DATASET at runtime (NOT build-time).
       - name: Build and Publish to Oxygen
         run: npx shopify hydrogen deploy --auth-bypass-token --auth-bypass-token-duration 12
         env:
           SHOPIFY_HYDROGEN_DEPLOYMENT_TOKEN: ${{ secrets.OXYGEN_DEPLOYMENT_TOKEN_1000099369 }}
-          VITE_SANITY_DATASET: ${{ steps.sanity-env.outputs.dataset }}
 
       # ── Smoke test: verify auth bypass works via all methods ───────────
       # Reads deployment URL + token from h2_deploy_log.json (written by hydrogen deploy).

@@ -30,7 +30,7 @@ export async function createHydrogenRouterContext(
     waitUntil,
     client: {
       projectId: env.SANITY_PROJECT_ID || 'sx997gpv',
-      dataset: import.meta.env.VITE_SANITY_DATASET || 'production',
+      dataset: env.SANITY_DATASET || 'production',
       apiVersion: '2025-02-19',
       useCdn: true,
       stega: {

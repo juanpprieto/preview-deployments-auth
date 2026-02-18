@@ -10,6 +10,7 @@ declare global {
   interface Env {
     SANITY_API_READ_TOKEN: string
     SANITY_PROJECT_ID: string
+    SANITY_DATASET: string
     SANITY_DATASET_PRODUCTION: string
     SANITY_DATASET_STAGING: string
     SANITY_DATASET_DEV: string
