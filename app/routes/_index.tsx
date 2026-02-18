@@ -1,12 +1,7 @@
-import {Await, useLoaderData, Link} from 'react-router';
+import {useLoaderData, Link} from 'react-router';
 import type {Route} from './+types/_index';
-import {Suspense} from 'react';
 import {Image} from '@shopify/hydrogen';
-import type {
-  FeaturedCollectionFragment,
-  RecommendedProductsQuery,
-} from 'storefrontapi.generated';
-import {ProductItem} from '~/components/ProductItem';
+import type {FeaturedCollectionFragment} from 'storefrontapi.generated';
 import {Query} from 'hydrogen-sanity';
 
 const HOME_PAGE_QUERY = `*[_type == "marketingPage" && slug.current == "home"][0]{
@@ -75,7 +70,7 @@ function loadDeferredData({context}: Route.LoaderArgs) {
 function extractText(
   blocks?: Array<{children: Array<{text: string}>}>,
 ): string {
-  if (!blocks) return '';
+  if (!blocks || !Array.isArray(blocks)) return '';
   return blocks
     .flatMap((block) => block.children.map((child) => child.text))
     .join(' ');
@@ -87,7 +82,7 @@ export default function Homepage() {
     <div className="home">
       <SanityHomePage initial={data.homePage} />
       <FeaturedCollection collection={data.featuredCollection} />
-      <RecommendedProducts products={data.recommendedProducts} />
+      {/* <RecommendedProducts products={data.recommendedProducts} /> */}
     </div>
   );
 }
@@ -161,31 +156,33 @@ function FeaturedCollection({
   );
 }
 
-function RecommendedProducts({
-  products,
-}: {
-  products: Promise<RecommendedProductsQuery | null>;
-}) {
-  return (
-    <div className="recommended-products">
-      <h2>Recommended Products</h2>
-      <Suspense fallback={<div>Loading...</div>}>
-        <Await resolve={products}>
-          {(response) => (
-            <div className="recommended-products-grid">
-              {response
-                ? response.products.nodes.map((product) => (
-                    <ProductItem key={product.id} product={product} />
-                  ))
-                : null}
-            </div>
-          )}
-        </Await>
-      </Suspense>
-      <br />
-    </div>
-  );
-}
+// Commented out for staging differentiation test — staging shows only
+// Sanity content + featured collection, while production keeps full layout.
+// function RecommendedProducts({
+//   products,
+// }: {
+//   products: Promise<RecommendedProductsQuery | null>;
+// }) {
+//   return (
+//     <div className="recommended-products">
+//       <h2>Recommended Products</h2>
+//       <Suspense fallback={<div>Loading...</div>}>
+//         <Await resolve={products}>
+//           {(response) => (
+//             <div className="recommended-products-grid">
+//               {response
+//                 ? response.products.nodes.map((product) => (
+//                     <ProductItem key={product.id} product={product} />
+//                   ))
+//                 : null}
+//             </div>
+//           )}
+//         </Await>
+//       </Suspense>
+//       <br />
+//     </div>
+//   );
+// }
 
 const FEATURED_COLLECTION_QUERY = `#graphql
   fragment FeaturedCollection on Collection {

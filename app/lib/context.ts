@@ -5,6 +5,29 @@ import {createSanityContext, type SanityContext} from 'hydrogen-sanity';
 import {PreviewSession} from 'hydrogen-sanity/preview/session';
 
 /**
+ * Resolves the Sanity dataset from per-environment Oxygen variables.
+ *
+ * Oxygen does not allow the same env var name to have different values per
+ * environment. Each environment gets its own named variable:
+ *   SANITY_DATASET_PRODUCTION  (scoped to Production)
+ *   SANITY_DATASET_STAGING     (scoped to Staging)
+ *   SANITY_DATASET_PREVIEW     (scoped to Preview)
+ *   SANITY_DATASET_DEV         (scoped to Dev)
+ *
+ * At runtime, only the variable scoped to the current Oxygen environment is
+ * defined. This function tries each name and returns the first defined value.
+ */
+function resolveSanityDataset(env: Env): string {
+  return (
+    env.SANITY_DATASET_PRODUCTION ||
+    env.SANITY_DATASET_STAGING ||
+    env.SANITY_DATASET_PREVIEW ||
+    env.SANITY_DATASET_DEV ||
+    'production'
+  );
+}
+
+/**
  * Creates Hydrogen context for React Router 7.9.x
  * Returns HydrogenRouterContextProvider with hybrid access patterns
  * */
@@ -24,14 +47,18 @@ export async function createHydrogenRouterContext(
     PreviewSession.init(request, [env.SESSION_SECRET]),
   ]);
 
+  const dataset = resolveSanityDataset(env);
+
   const sanity = await createSanityContext({
     request,
     cache,
     waitUntil,
     client: {
       projectId: env.SANITY_PROJECT_ID || 'sx997gpv',
-      dataset: env.SANITY_DATASET || 'production',
+      dataset,
       apiVersion: '2025-02-19',
+      // All datasets must have public ACL for CDN queries to work without a
+      // token. The preview.token is only sent when preview mode is active.
       useCdn: true,
       stega: {
         enabled: true,
