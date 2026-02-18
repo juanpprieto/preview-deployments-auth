@@ -28,13 +28,17 @@ export default async function handleRequest(
     ],
   });
 
+  const {SanityProvider} = context.sanity;
+
   const body = await renderToReadableStream(
     <NonceProvider>
-      <ServerRouter
-        context={reactRouterContext}
-        url={request.url}
-        nonce={nonce}
-      />
+      <SanityProvider>
+        <ServerRouter
+          context={reactRouterContext}
+          url={request.url}
+          nonce={nonce}
+        />
+      </SanityProvider>
     </NonceProvider>,
     {
       nonce,

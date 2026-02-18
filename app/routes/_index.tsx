@@ -7,46 +7,62 @@ import type {
   RecommendedProductsQuery,
 } from 'storefrontapi.generated';
 import {ProductItem} from '~/components/ProductItem';
+import {Query} from 'hydrogen-sanity';
+
+const HOME_PAGE_QUERY = `*[_type == "marketingPage" && slug.current == "home"][0]{
+  _id,
+  title,
+  "slug": slug.current,
+  sections[]{
+    _type,
+    _key,
+    title,
+    headlineText
+  }
+}`;
+
+type HomePage = {
+  _id: string;
+  title: string;
+  slug: string;
+  sections: Array<{
+    _type: string;
+    _key: string;
+    title: string;
+    headlineText?: Array<{
+      _type: string;
+      children: Array<{text: string}>;
+    }>;
+  }>;
+} | null;
 
 export const meta: Route.MetaFunction = () => {
   return [{title: 'Hydrogen | Home'}];
 };
 
 export async function loader(args: Route.LoaderArgs) {
-  // Start fetching non-critical data without blocking time to first byte
   const deferredData = loadDeferredData(args);
-
-  // Await the critical data required to render initial state of the page
   const criticalData = await loadCriticalData(args);
 
   return {...deferredData, ...criticalData};
 }
 
-/**
- * Load data necessary for rendering content above the fold. This is the critical data
- * needed to render the page. If it's unavailable, the whole page should 400 or 500 error.
- */
 async function loadCriticalData({context}: Route.LoaderArgs) {
-  const [{collections}] = await Promise.all([
+  const [{collections}, homePage] = await Promise.all([
     context.storefront.query(FEATURED_COLLECTION_QUERY),
-    // Add other queries here, so that they are loaded in parallel
+    context.sanity.query<HomePage>(HOME_PAGE_QUERY),
   ]);
 
   return {
     featuredCollection: collections.nodes[0],
+    homePage,
   };
 }
 
-/**
- * Load data for rendering content below the fold. This data is deferred and will be
- * fetched after the initial page load. If it's unavailable, the page should still 200.
- * Make sure to not throw any errors here, as it will cause the page to 500.
- */
 function loadDeferredData({context}: Route.LoaderArgs) {
   const recommendedProducts = context.storefront
     .query(RECOMMENDED_PRODUCTS_QUERY)
     .catch((error: Error) => {
-      // Log query errors, but don't throw them so the page can still render
       console.error(error);
       return null;
     });
@@ -56,13 +72,70 @@ function loadDeferredData({context}: Route.LoaderArgs) {
   };
 }
 
+function extractText(
+  blocks?: Array<{children: Array<{text: string}>}>,
+): string {
+  if (!blocks) return '';
+  return blocks
+    .flatMap((block) => block.children.map((child) => child.text))
+    .join(' ');
+}
+
 export default function Homepage() {
   const data = useLoaderData<typeof loader>();
   return (
     <div className="home">
+      <SanityHomePage initial={data.homePage} />
       <FeaturedCollection collection={data.featuredCollection} />
       <RecommendedProducts products={data.recommendedProducts} />
     </div>
+  );
+}
+
+function SanityHomePage({initial}: {initial: typeof Query extends never ? never : any}) {
+  return (
+    <Query query={HOME_PAGE_QUERY} options={{initial}}>
+      {(homePage: HomePage) => {
+        if (!homePage) return null;
+        return (
+          <section
+            style={{
+              padding: '2rem',
+              background: '#f5f5f5',
+              marginBottom: '2rem',
+            }}
+          >
+            <p style={{fontSize: '0.75rem', color: '#999', marginBottom: '0.5rem'}}>
+              Sanity Content (live editing enabled)
+            </p>
+            <h2 style={{fontSize: '1.5rem', fontWeight: 'bold'}}>
+              {homePage.title}
+            </h2>
+            {homePage.sections?.map((section) => (
+              <div key={section._key} style={{marginTop: '1rem'}}>
+                <span
+                  style={{
+                    fontSize: '0.7rem',
+                    background: '#e0e0e0',
+                    padding: '0.15rem 0.4rem',
+                    borderRadius: '3px',
+                    marginRight: '0.5rem',
+                  }}
+                >
+                  {section._type}
+                </span>
+                <strong>{section.title}</strong>
+                {section.headlineText && (
+                  <p style={{marginTop: '0.25rem', color: '#555'}}>
+                    {extractText(section.headlineText)}
+                  </p>
+                )}
+              </div>
+            ))}
+          </section>
+        );
+      }}
+    </Query>
   );
 }
 
