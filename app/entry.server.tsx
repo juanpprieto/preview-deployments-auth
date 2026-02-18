@@ -28,13 +28,17 @@ export default async function handleRequest(
     ],
   });
 
+  const {SanityProvider} = context.sanity;
+
   const body = await renderToReadableStream(
     <NonceProvider>
-      <ServerRouter
-        context={reactRouterContext}
-        url={request.url}
-        nonce={nonce}
-      />
+      <SanityProvider>
+        <ServerRouter
+          context={reactRouterContext}
+          url={request.url}
+          nonce={nonce}
+        />
+      </SanityProvider>
     </NonceProvider>,
     {
       nonce,
@@ -51,7 +55,8 @@ export default async function handleRequest(
   }
 
   responseHeaders.set('Content-Type', 'text/html');
-  responseHeaders.set('Content-Security-Policy', header);
+  // CSP temporarily disabled to validate Presentation tool iframe flow
+  // responseHeaders.set('Content-Security-Policy', header);
 
   return new Response(body, {
     headers: responseHeaders,
