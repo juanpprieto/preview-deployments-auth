@@ -85,10 +85,16 @@ export async function loader(args: Route.LoaderArgs) {
   const sessionSecret = env.SESSION_SECRET || 'dev-secret-change-me';
   const {preview} = await getPreviewData(args.request, sessionSecret);
 
+  // Extract auth bypass token from URL — needed on client because
+  // third-party cookies are blocked in iframes (Safari ITP, Brave, etc.)
+  const url = new URL(args.request.url);
+  const authBypassToken = url.searchParams.get('_auth') || undefined;
+
   return {
     ...deferredData,
     ...criticalData,
     preview,
+    authBypassToken,
     publicStoreDomain: env.PUBLIC_STORE_DOMAIN,
     shop: getShopAnalytics({
       storefront,
