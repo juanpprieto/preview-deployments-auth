@@ -24,4 +24,9 @@ declare global {
   interface HydrogenAdditionalContext {
     sanity: import('hydrogen-sanity').SanityContext
   }
+
+  // Cloudflare Workers extension — not in lib.dom SubtleCrypto
+  interface SubtleCrypto {
+    timingSafeEqual(a: ArrayBuffer | ArrayBufferView, b: ArrayBuffer | ArrayBufferView): boolean
+  }
 }
