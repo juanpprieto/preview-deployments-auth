@@ -15,6 +15,10 @@ declare global {
     SANITY_DATASET_DEV: string
     SANITY_STUDIO_URL: string
     SESSION_SECRET: string
+    // HTTP Basic Auth (Phase 1 — shared across staging + dev)
+    PRIVATE_HYDROGEN_USERNAME?: string
+    PRIVATE_HYDROGEN_PASSWORD?: string
+    PRIVATE_HYDROGEN_AUTH_DISABLED?: string
   }
 
   interface HydrogenAdditionalContext {
