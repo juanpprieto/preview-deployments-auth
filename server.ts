@@ -1,5 +1,6 @@
 import * as serverBuild from 'virtual:react-router/server-build';
 import {createRequestHandler, storefrontRedirect} from '@shopify/hydrogen';
+import {checkBasicAuth} from '~/lib/basic-auth.server';
 import {createHydrogenRouterContext} from '~/lib/context';
 
 /**
@@ -12,6 +13,9 @@ export default {
     executionContext: ExecutionContext,
   ): Promise<Response> {
     try {
+      const authResponse = checkBasicAuth(request, env);
+      if (authResponse) return authResponse;
+
       const hydrogenContext = await createHydrogenRouterContext(
         request,
         env,
