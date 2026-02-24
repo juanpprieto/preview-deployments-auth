@@ -156,9 +156,10 @@ jobs:
           echo "?_auth= parameter: $AUTH_STATUS (KEY TEST - 200 means it works as URL param)"
           echo "Header bypass:     $HEADER_STATUS (expect 200)"
 
-      # ── Healthcheck: verify app returns 200 after Oxygen bypass ────────
-      # Uses the auth bypass token to pass Oxygen's gateway, then confirms
-      # the Hydrogen app itself responds with HTTP 200 (not a 401/500).
+      # ── Healthcheck: verify Hydrogen app responds (not just Oxygen gateway) ─
+      # Uses auth bypass token via header to pass Oxygen's gateway, then validates:
+      #   1. HTTP 200
+      #   2. Response body contains Hydrogen app markers (not a Shopify auth page)
       - name: Healthcheck deployed preview
         if: always()
         run: |
@@ -171,16 +172,32 @@ jobs:
           fi
 
           echo "Healthcheck: ${DEPLOY_URL}"
-          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -L \
+          BODY=$(curl -sS -D /tmp/healthcheck-headers -L \
             -H "oxygen-auth-bypass-token: ${AUTH_TOKEN}" \
             "$DEPLOY_URL")
+          STATUS=$(head -1 /tmp/healthcheck-headers | grep -oP '\d{3}')
+
           echo "HTTP status: $STATUS"
 
           if [ "$STATUS" != "200" ]; then
-            echo "FAIL: expected 200, got $STATUS"
+            echo "FAIL: expected HTTP 200, got $STATUS"
             exit 1
           fi
-          echo "PASS: app healthy"
+
+          # Verify this is our Hydrogen app, not a Shopify auth/login page
+          if echo "$BODY" | grep -q 'accounts.shopify.com'; then
+            echo "FAIL: response is a Shopify login redirect page, not our app"
+            exit 1
+          fi
+
+          if ! echo "$BODY" | grep -q '<html'; then
+            echo "FAIL: response is not an HTML page"
+            echo "First 500 chars:"
+            echo "$BODY" | head -c 500
+            exit 1
+          fi
+
+          echo "PASS: Hydrogen app healthy (HTML response, not auth page)"
 
       # ── Upload deploy log for debugging ────────────────────────────────
       # h2_deploy_log.json contains: url, authBypassToken, environmentName, etc.
