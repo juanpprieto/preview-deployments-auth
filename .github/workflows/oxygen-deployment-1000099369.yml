@@ -81,6 +81,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run unit tests
+        run: npm test
+
       # ── Resolve Sanity dataset from branch name ────────────────────────
       # Maps the current branch to the corresponding Sanity dataset.
       # This value is injected as VITE_SANITY_DATASET at build time so that
@@ -152,6 +155,32 @@ jobs:
           echo "Bare URL:          $BARE_STATUS (expect 302 for private, 200 for public)"
           echo "?_auth= parameter: $AUTH_STATUS (KEY TEST - 200 means it works as URL param)"
           echo "Header bypass:     $HEADER_STATUS (expect 200)"
+
+      # ── Healthcheck: verify app returns 200 after Oxygen bypass ────────
+      # Uses the auth bypass token to pass Oxygen's gateway, then confirms
+      # the Hydrogen app itself responds with HTTP 200 (not a 401/500).
+      - name: Healthcheck deployed preview
+        if: always()
+        run: |
+          DEPLOY_URL=$(jq -r '.url // empty' h2_deploy_log.json 2>/dev/null)
+          AUTH_TOKEN=$(jq -r '.authBypassToken // empty' h2_deploy_log.json 2>/dev/null)
+
+          if [ -z "$DEPLOY_URL" ] || [ -z "$AUTH_TOKEN" ]; then
+            echo "Skipping healthcheck: no deploy URL or token"
+            exit 0
+          fi
+
+          echo "Healthcheck: ${DEPLOY_URL}"
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -L \
+            -H "oxygen-auth-bypass-token: ${AUTH_TOKEN}" \
+            "$DEPLOY_URL")
+          echo "HTTP status: $STATUS"
+
+          if [ "$STATUS" != "200" ]; then
+            echo "FAIL: expected 200, got $STATUS"
+            exit 1
+          fi
+          echo "PASS: app healthy"
 
       # ── Upload deploy log for debugging ────────────────────────────────
       # h2_deploy_log.json contains: url, authBypassToken, environmentName, etc.
