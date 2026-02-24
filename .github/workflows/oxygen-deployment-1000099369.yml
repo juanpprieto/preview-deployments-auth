@@ -157,9 +157,11 @@ jobs:
           echo "Header bypass:     $HEADER_STATUS (expect 200)"
 
       # ── Healthcheck: verify Hydrogen app responds (not just Oxygen gateway) ─
-      # Uses auth bypass token via header to pass Oxygen's gateway, then validates:
+      # Uses ?_auth= URL param to bypass Oxygen's gateway (headers get dropped
+      # on redirects, URL params persist). Then validates:
       #   1. HTTP 200
-      #   2. Response body contains Hydrogen app markers (not a Shopify auth page)
+      #   2. Response body is our Hydrogen app (not a Shopify auth page)
+      # See: https://shopify.dev/docs/api/shopify-cli/hydrogen/hydrogen-deploy
       - name: Healthcheck deployed preview
         if: always()
         run: |
@@ -171,16 +173,18 @@ jobs:
             exit 0
           fi
 
-          echo "Healthcheck: ${DEPLOY_URL}"
-          BODY=$(curl -sS -D /tmp/healthcheck-headers -L \
-            -H "oxygen-auth-bypass-token: ${AUTH_TOKEN}" \
-            "$DEPLOY_URL")
-          STATUS=$(head -1 /tmp/healthcheck-headers | grep -oP '\d{3}')
+          FULL_URL="${DEPLOY_URL}?_auth=${AUTH_TOKEN}"
+          echo "Healthcheck: ${DEPLOY_URL}?_auth=<redacted>"
+
+          STATUS=$(curl -sS -o /tmp/healthcheck-body -w "%{http_code}" -L "$FULL_URL")
+          BODY=$(cat /tmp/healthcheck-body)
 
           echo "HTTP status: $STATUS"
 
           if [ "$STATUS" != "200" ]; then
             echo "FAIL: expected HTTP 200, got $STATUS"
+            echo "First 500 chars:"
+            echo "$BODY" | head -c 500
             exit 1
           fi
 
