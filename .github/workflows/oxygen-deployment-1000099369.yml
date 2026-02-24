@@ -81,6 +81,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run unit tests
+        run: npm test
+
       # ── Resolve Sanity dataset from branch name ────────────────────────
       # Maps the current branch to the corresponding Sanity dataset.
       # This value is injected as VITE_SANITY_DATASET at build time so that
@@ -152,6 +155,68 @@ jobs:
           echo "Bare URL:          $BARE_STATUS (expect 302 for private, 200 for public)"
           echo "?_auth= parameter: $AUTH_STATUS (KEY TEST - 200 means it works as URL param)"
           echo "Header bypass:     $HEADER_STATUS (expect 200)"
+
+      # ── Healthcheck: verify Hydrogen app responds after Oxygen bypass ────
+      # Uses ?_auth= URL param to bypass Oxygen's gateway (headers get dropped
+      # on redirects, URL params persist).
+      # Branch-aware expectations:
+      #   - main (production): No Basic Auth → expect 200 + HTML
+      #   - all other branches: Basic Auth enabled → expect 401 + WWW-Authenticate
+      # See: https://shopify.dev/docs/api/shopify-cli/hydrogen/hydrogen-deploy
+      - name: Healthcheck deployed preview
+        if: always()
+        run: |
+          DEPLOY_URL=$(jq -r '.url // empty' h2_deploy_log.json 2>/dev/null)
+          AUTH_TOKEN=$(jq -r '.authBypassToken // empty' h2_deploy_log.json 2>/dev/null)
+
+          if [ -z "$DEPLOY_URL" ] || [ -z "$AUTH_TOKEN" ]; then
+            echo "Skipping healthcheck: no deploy URL or token"
+            exit 0
+          fi
+
+          FULL_URL="${DEPLOY_URL}?_auth=${AUTH_TOKEN}"
+          echo "Healthcheck: ${DEPLOY_URL}?_auth=<redacted>"
+          echo "Branch: ${{ github.ref_name }}"
+
+          STATUS=$(curl -sS -o /tmp/healthcheck-body -D /tmp/healthcheck-headers -w "%{http_code}" -L "$FULL_URL")
+          BODY=$(cat /tmp/healthcheck-body)
+          HEADERS=$(cat /tmp/healthcheck-headers)
+
+          echo "HTTP status: $STATUS"
+
+          # Guard: must not be a Shopify login redirect
+          if echo "$BODY" | grep -q 'accounts.shopify.com'; then
+            echo "FAIL: response is a Shopify login redirect, not our app"
+            exit 1
+          fi
+
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            # Production: no Basic Auth → expect 200 + HTML
+            if [ "$STATUS" != "200" ]; then
+              echo "FAIL: production expected 200, got $STATUS"
+              echo "First 500 chars:" && echo "$BODY" | head -c 500
+              exit 1
+            fi
+            if ! echo "$BODY" | grep -q '<html'; then
+              echo "FAIL: response is not HTML"
+              echo "First 500 chars:" && echo "$BODY" | head -c 500
+              exit 1
+            fi
+            echo "PASS: production app healthy (200, HTML response)"
+          else
+            # Non-production: Basic Auth enabled → expect 401 + WWW-Authenticate
+            if [ "$STATUS" != "401" ]; then
+              echo "FAIL: expected 401 (Basic Auth wall), got $STATUS"
+              echo "First 500 chars:" && echo "$BODY" | head -c 500
+              exit 1
+            fi
+            if ! echo "$HEADERS" | grep -qi 'WWW-Authenticate.*Basic'; then
+              echo "FAIL: 401 but missing WWW-Authenticate: Basic header"
+              echo "Response headers:" && echo "$HEADERS"
+              exit 1
+            fi
+            echo "PASS: Basic Auth active (401 with WWW-Authenticate: Basic)"
+          fi
 
       # ── Upload deploy log for debugging ────────────────────────────────
       # h2_deploy_log.json contains: url, authBypassToken, environmentName, etc.

@@ -10,7 +10,9 @@
     "preview": "shopify hydrogen preview --build",
     "lint": "eslint --no-error-on-unmatched-pattern .",
     "typecheck": "react-router typegen && tsc --noEmit",
-    "codegen": "shopify hydrogen codegen && react-router typegen"
+    "codegen": "shopify hydrogen codegen && react-router typegen",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "prettier": "@shopify/prettier-config",
   "dependencies": {
@@ -61,7 +63,8 @@
     "prettier": "^3.4.2",
     "typescript": "^5.9.2",
     "vite": "^6.2.4",
-    "vite-tsconfig-paths": "^4.3.1"
+    "vite-tsconfig-paths": "^4.3.1",
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=18.0.0"
