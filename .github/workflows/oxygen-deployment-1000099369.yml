@@ -156,11 +156,12 @@ jobs:
           echo "?_auth= parameter: $AUTH_STATUS (KEY TEST - 200 means it works as URL param)"
           echo "Header bypass:     $HEADER_STATUS (expect 200)"
 
-      # ── Healthcheck: verify Hydrogen app responds (not just Oxygen gateway) ─
+      # ── Healthcheck: verify Hydrogen app responds after Oxygen bypass ────
       # Uses ?_auth= URL param to bypass Oxygen's gateway (headers get dropped
-      # on redirects, URL params persist). Then validates:
-      #   1. HTTP 200
-      #   2. Response body is our Hydrogen app (not a Shopify auth page)
+      # on redirects, URL params persist).
+      # Branch-aware expectations:
+      #   - main (production): No Basic Auth → expect 200 + HTML
+      #   - all other branches: Basic Auth enabled → expect 401 + WWW-Authenticate
       # See: https://shopify.dev/docs/api/shopify-cli/hydrogen/hydrogen-deploy
       - name: Healthcheck deployed preview
         if: always()
@@ -175,33 +176,47 @@ jobs:
 
           FULL_URL="${DEPLOY_URL}?_auth=${AUTH_TOKEN}"
           echo "Healthcheck: ${DEPLOY_URL}?_auth=<redacted>"
+          echo "Branch: ${{ github.ref_name }}"
 
-          STATUS=$(curl -sS -o /tmp/healthcheck-body -w "%{http_code}" -L "$FULL_URL")
+          STATUS=$(curl -sS -o /tmp/healthcheck-body -D /tmp/healthcheck-headers -w "%{http_code}" -L "$FULL_URL")
           BODY=$(cat /tmp/healthcheck-body)
+          HEADERS=$(cat /tmp/healthcheck-headers)
 
           echo "HTTP status: $STATUS"
 
-          if [ "$STATUS" != "200" ]; then
-            echo "FAIL: expected HTTP 200, got $STATUS"
-            echo "First 500 chars:"
-            echo "$BODY" | head -c 500
-            exit 1
-          fi
-
-          # Verify this is our Hydrogen app, not a Shopify auth/login page
+          # Guard: must not be a Shopify login redirect
           if echo "$BODY" | grep -q 'accounts.shopify.com'; then
-            echo "FAIL: response is a Shopify login redirect page, not our app"
+            echo "FAIL: response is a Shopify login redirect, not our app"
             exit 1
           fi
 
-          if ! echo "$BODY" | grep -q '<html'; then
-            echo "FAIL: response is not an HTML page"
-            echo "First 500 chars:"
-            echo "$BODY" | head -c 500
-            exit 1
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            # Production: no Basic Auth → expect 200 + HTML
+            if [ "$STATUS" != "200" ]; then
+              echo "FAIL: production expected 200, got $STATUS"
+              echo "First 500 chars:" && echo "$BODY" | head -c 500
+              exit 1
+            fi
+            if ! echo "$BODY" | grep -q '<html'; then
+              echo "FAIL: response is not HTML"
+              echo "First 500 chars:" && echo "$BODY" | head -c 500
+              exit 1
+            fi
+            echo "PASS: production app healthy (200, HTML response)"
+          else
+            # Non-production: Basic Auth enabled → expect 401 + WWW-Authenticate
+            if [ "$STATUS" != "401" ]; then
+              echo "FAIL: expected 401 (Basic Auth wall), got $STATUS"
+              echo "First 500 chars:" && echo "$BODY" | head -c 500
+              exit 1
+            fi
+            if ! echo "$HEADERS" | grep -qi 'WWW-Authenticate.*Basic'; then
+              echo "FAIL: 401 but missing WWW-Authenticate: Basic header"
+              echo "Response headers:" && echo "$HEADERS"
+              exit 1
+            fi
+            echo "PASS: Basic Auth active (401 with WWW-Authenticate: Basic)"
           fi
-
-          echo "PASS: Hydrogen app healthy (HTML response, not auth page)"
 
       # ── Upload deploy log for debugging ────────────────────────────────
       # h2_deploy_log.json contains: url, authBypassToken, environmentName, etc.
