@@ -1,5 +1,61 @@
+# =============================================================================
+# Sync Oxygen Auth Bypass Token → Sanity Document
+# =============================================================================
+#
+# PURPOSE:
+#   When Shopify deploys a Hydrogen storefront to Oxygen, `shopify[bot]` posts a
+#   PR comment containing the preview URL and an auth bypass token (JWT).
+#   This workflow extracts those values and writes them to a Sanity document so
+#   that Sanity Studio's Presentation tool can load the protected preview in an
+#   iframe — without manual token copy-paste.
+#
+# HOW IT WORKS:
+#   1. `shopify[bot]` comments on a PR with the deployment details
+#   2. This workflow triggers on `issue_comment` (created or edited)
+#   3. It fetches the PR's base branch to determine the target environment
+#   4. It extracts the deployment URL and auth token from the comment body
+#   5. It writes a `sanity.oxygenProtectionBypass` document to the matching
+#      Sanity dataset (staging → staging, dev → dev)
+#   6. The Studio's `makeInitialUrl` reads that doc to build the iframe URL
+#
+# ENVIRONMENT MAPPING:
+#   PR base branch  →  Sanity dataset  →  Bypass doc ID
+#   ─────────────────────────────────────────────────────
+#   main             →  (skipped)       →  Production is public, no token needed
+#   staging          →  staging         →  oxygen-bypass.staging
+#   dev              →  dev             →  oxygen-bypass.dev
+#   *                →  staging         →  oxygen-bypass.staging (fallback)
+#
+# TOKEN TYPES — two kinds, only one synced to Sanity:
+#   - USER_SHARED (from shopify[bot] PR comment): NO time expiry, deployment-scoped.
+#     This is what we extract and sync. Validated at 56h+ still returning HTTP 200.
+#   - TESTING_AUTOMATION (from --auth-bypass-token): Expires after max 12h.
+#     Used only for CI smoke tests in the deploy workflow. NOT synced to Sanity.
+#   See: decisions/sanity-presentation-oxygen-auth.md → "USER_SHARED Token Longevity"
+#
+# IMPORTANT CONSTRAINTS:
+#   - `issue_comment` workflows ONLY run from the default branch (main)
+#   - `shopify[bot]` posts `created` on first deploy, `edited` on subsequent
+#   - `::add-mask::` redacts token from ALL subsequent log output
+#   - Tokens are deployment-scoped — die when the deployment is replaced
+#   - All staging deploys MUST go through PRs (not direct pushes) to get
+#     bot comments with USER_SHARED tokens
+#
+# PREREQUISITES:
+#   - GitHub secret: SANITY_API_WRITE_TOKEN (Sanity write token for project sx997gpv)
+#   - The `sanity.oxygenProtectionBypass` schema type must exist in the Studio
+#   - The Oxygen deployment workflow must use --auth-bypass-token flag
+#
+# SEE ALSO:
+#   - decisions/sanity-presentation-oxygen-auth.md (full architecture doc)
+#   - .github/workflows/oxygen-deployment-1000099369.yml (the deploy workflow)
+#   - Studio: plugins/resolveOxygenPreviewMode.ts (reads the bypass doc)
+# =============================================================================
+
 name: Sync Oxygen auth to Sanity
 
+# Trigger: shopify[bot] comments on PRs after successful Oxygen deployments.
+# `created` = first deploy to a PR; `edited` = subsequent deploys update the same comment.
 on:
   issue_comment:
     types: [created, edited]
@@ -12,36 +68,92 @@ jobs:
   sync-token:
     name: Extract and sync token
     runs-on: ubuntu-latest
+
+    # Gate: only run for shopify[bot] comments that report a successful deploy on a PR.
+    # Without this gate, every issue/PR comment in the repo would trigger a run.
     if: >
       github.event.comment.user.login == 'shopify[bot]' &&
       contains(github.event.comment.body, 'Successful') &&
       github.event.issue.pull_request
 
     steps:
+      # ── Step 1: Log the trigger context ────────────────────────────────
       - name: Log trigger
         run: |
           echo "=== issue_comment event fired for shopify[bot] ==="
           echo "PR: #${{ github.event.issue.number }}"
           echo "Comment author: ${{ github.event.comment.user.login }}"
 
+      # ── Step 2: Determine environment from PR base branch ──────────────
+      # Fetches the PR via GitHub API to find its base (target) branch,
+      # then maps that branch to the Sanity dataset and document ID.
+      # PRs targeting `main` are skipped entirely because production is public.
+      - name: Resolve target branch and environment
+        id: env
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Fetch PR metadata to determine which branch it targets
+          PR_JSON=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }})
+          TARGET_BRANCH=$(echo "$PR_JSON" | jq -r '.base.ref')
+          echo "target_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
+          echo "Target branch: $TARGET_BRANCH"
+
+          case "$TARGET_BRANCH" in
+            main)
+              # Production environment is PUBLIC — no auth bypass needed.
+              # The Studio production workspace uses a stable public URL
+              # stored in the oxygen-bypass.production doc (set manually once).
+              echo "skip=true" >> $GITHUB_OUTPUT
+              echo "Skipping: production environment is public, no bypass sync needed"
+              ;;
+            staging)
+              echo "skip=false" >> $GITHUB_OUTPUT
+              echo "dataset=staging" >> $GITHUB_OUTPUT
+              echo "doc_id=oxygen-bypass.staging" >> $GITHUB_OUTPUT
+              echo "env_name=Staging" >> $GITHUB_OUTPUT
+              ;;
+            dev)
+              echo "skip=false" >> $GITHUB_OUTPUT
+              echo "dataset=dev" >> $GITHUB_OUTPUT
+              echo "doc_id=oxygen-bypass.dev" >> $GITHUB_OUTPUT
+              echo "env_name=Dev" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              # Unknown branches default to staging to avoid silent failures.
+              echo "skip=false" >> $GITHUB_OUTPUT
+              echo "WARNING: Unknown target branch '$TARGET_BRANCH', defaulting to staging"
+              echo "dataset=staging" >> $GITHUB_OUTPUT
+              echo "doc_id=oxygen-bypass.staging" >> $GITHUB_OUTPUT
+              echo "env_name=Staging" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      # ── Step 3: Parse deployment URL + auth token from bot comment ─────
+      # shopify[bot] comment format:
+      #   [Preview deployment](https://{id}-{hash}.myshopify.dev?_auth={JWT})
+      # We extract the URL and JWT separately.
       - name: Extract token
+        if: steps.env.outputs.skip != 'true'
         id: extract
         shell: bash
         env:
+          # Pass comment body as env var to avoid shell injection via ${{ }}
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          # Extract deployment URL
+          # Extract the Oxygen deployment URL (*.myshopify.dev)
           DEPLOY_URL=$(echo "$COMMENT_BODY" | grep -o 'https://[a-z0-9-]*\.myshopify\.dev' | head -1)
           echo "deploy_url=$DEPLOY_URL" >> $GITHUB_OUTPUT
           echo "Extracted URL: $DEPLOY_URL"
 
-          # Extract USER_SHARED token
+          # Extract the auth bypass JWT from the ?_auth= query parameter
           AUTH_TOKEN=$(echo "$COMMENT_BODY" | grep -o '_auth=[^)]*' | head -1 | sed 's/_auth=//')
+          # Mask the token so it never appears in subsequent log output
           echo "::add-mask::$AUTH_TOKEN"
           echo "auth_token=$AUTH_TOKEN" >> $GITHUB_OUTPUT
           echo "Token length: ${#AUTH_TOKEN}"
 
-          # Validate token kind
+          # Decode JWT payload to extract the token kind (USER_SHARED, etc.)
           PAYLOAD=$(echo "$AUTH_TOKEN" | cut -d. -f2)
           MOD=$((${#PAYLOAD} % 4))
           if [ $MOD -eq 2 ]; then PAYLOAD="${PAYLOAD}=="; elif [ $MOD -eq 3 ]; then PAYLOAD="${PAYLOAD}="; fi
@@ -49,7 +161,11 @@ jobs:
           echo "token_kind=$TOKEN_KIND" >> $GITHUB_OUTPUT
           echo "Token kind: $TOKEN_KIND"
 
+      # ── Step 4: Verify token actually grants access ────────────────────
+      # Prevents writing a broken token to Sanity. If the token doesn't
+      # return HTTP 200, we warn but don't fail (token may need propagation time).
       - name: Verify token works
+        if: steps.env.outputs.skip != 'true'
         env:
           DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
           AUTH_TOKEN: ${{ steps.extract.outputs.auth_token }}
@@ -64,11 +180,15 @@ jobs:
             echo "WARNING: Token did not return 200"
           fi
 
+      # ── Step 5: Save token as GitHub artifact for auditing ─────────────
+      # Retained for 90 days. Useful for debugging token expiration issues.
       - name: Save as artifact
+        if: steps.env.outputs.skip != 'true'
         env:
           DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
           AUTH_TOKEN: ${{ steps.extract.outputs.auth_token }}
           TOKEN_KIND: ${{ steps.extract.outputs.token_kind }}
+          SANITY_DATASET: ${{ steps.env.outputs.dataset }}
         run: |
           mkdir -p /tmp/oxygen-bypass
           cat > /tmp/oxygen-bypass/token.json << ARTIFACT_EOF
@@ -76,6 +196,7 @@ jobs:
             "deploymentUrl": "$DEPLOY_URL",
             "authToken": "$AUTH_TOKEN",
             "tokenKind": "$TOKEN_KIND",
+            "dataset": "$SANITY_DATASET",
             "pr": ${{ github.event.issue.number }},
             "extractedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
@@ -84,17 +205,28 @@ jobs:
           cat /tmp/oxygen-bypass/token.json
 
       - name: Upload artifact
+        if: steps.env.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: oxygen-bypass-token
           path: /tmp/oxygen-bypass/token.json
           retention-days: 90
 
+      # ── Step 6: Write token to Sanity bypass document ──────────────────
+      # Uses createOrReplace to upsert the doc. The Studio's Presentation tool
+      # reads this doc via:
+      #   *[_type == "sanity.oxygenProtectionBypass"][0]{deploymentUrl, authToken}
+      # Each dataset has its own bypass doc (one doc per environment).
       - name: Patch Sanity bypass document
+        if: steps.env.outputs.skip != 'true'
         env:
           DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
           AUTH_TOKEN: ${{ steps.extract.outputs.auth_token }}
           TOKEN_KIND: ${{ steps.extract.outputs.token_kind }}
+          TARGET_BRANCH: ${{ steps.env.outputs.target_branch }}
+          SANITY_DATASET: ${{ steps.env.outputs.dataset }}
+          SANITY_DOC_ID: ${{ steps.env.outputs.doc_id }}
+          SANITY_ENV_NAME: ${{ steps.env.outputs.env_name }}
           SANITY_WRITE_TOKEN: ${{ secrets.SANITY_API_WRITE_TOKEN }}
         run: |
           if [ -z "$SANITY_WRITE_TOKEN" ]; then
@@ -102,24 +234,29 @@ jobs:
             exit 0
           fi
 
+          echo "Patching doc '$SANITY_DOC_ID' in dataset '$SANITY_DATASET'"
+
           PAYLOAD=$(jq -n \
+            --arg id "$SANITY_DOC_ID" \
             --arg url "$DEPLOY_URL" \
             --arg token "$AUTH_TOKEN" \
             --arg kind "$TOKEN_KIND" \
+            --arg branch "$TARGET_BRANCH" \
+            --arg name "$SANITY_ENV_NAME" \
             --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{mutations: [{createOrReplace: {
-              _id: "oxygen-bypass.staging",
+              _id: $id,
               _type: "sanity.oxygenProtectionBypass",
-              name: "Staging",
+              name: $name,
               deploymentUrl: $url,
               authToken: $token,
-              branch: "staging",
+              branch: $branch,
               tokenKind: $kind,
               updatedAt: $ts
             }}]}')
 
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://sx997gpv.api.sanity.io/v2021-06-07/data/mutate/production" \
+            "https://sx997gpv.api.sanity.io/v2021-06-07/data/mutate/${SANITY_DATASET}" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $SANITY_WRITE_TOKEN" \
             -d "$PAYLOAD")
@@ -133,15 +270,20 @@ jobs:
             echo "ERROR: Failed to patch Sanity document"
             exit 1
           fi
-          echo "Successfully updated oxygen-bypass.staging in Sanity"
+          echo "Successfully updated $SANITY_DOC_ID in dataset $SANITY_DATASET"
 
+      # ── Step 7: Print summary ──────────────────────────────────────────
       - name: Summary
+        if: steps.env.outputs.skip != 'true'
         env:
           DEPLOY_URL: ${{ steps.extract.outputs.deploy_url }}
           TOKEN_KIND: ${{ steps.extract.outputs.token_kind }}
+          SANITY_DATASET: ${{ steps.env.outputs.dataset }}
+          SANITY_DOC_ID: ${{ steps.env.outputs.doc_id }}
         run: |
           echo "=== Sync Summary ==="
           echo "PR: #${{ github.event.issue.number }}"
           echo "Deploy URL: $DEPLOY_URL"
           echo "Token kind: $TOKEN_KIND"
-          echo "Sanity doc: oxygen-bypass.staging patched"
+          echo "Dataset: $SANITY_DATASET"
+          echo "Doc: $SANITY_DOC_ID patched"

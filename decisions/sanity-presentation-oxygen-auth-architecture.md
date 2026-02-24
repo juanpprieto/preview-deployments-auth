@@ -987,6 +987,21 @@ export const client = createClient({
 7. Next deploy → cycle repeats from step 2
 ```
 
+### Validated: USER_SHARED Has No Time-Based Expiry
+
+Tested 2026-02-18 against real deployment tokens from shopify[bot] PR comments:
+
+| Token Age | HTTP Status | Notes |
+|---|---|---|
+| 7.1h | 200 | Within TESTING_AUTOMATION 12h window |
+| 20.7h | 200 | Past 12h — would fail if TESTING_AUTOMATION |
+| 22.3h | 200 | Past 12h — confirms no `exp` enforcement |
+| **56.7h (2.4 days)** | **200** | Oldest available token, still valid |
+
+`USER_SHARED` JWTs contain `{sub, kind, iat}` only — no `exp` claim. The Oxygen Gateway does not enforce time-based expiry for this kind. Tokens die only when their deployment is replaced (deployment-scoped via `sub` claim).
+
+See `sanity-presentation-oxygen-auth.md` → "USER_SHARED Token Longevity" for full test matrix and token type comparison.
+
 ---
 
 ## 10. CSP (Content Security Policy)

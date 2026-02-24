@@ -21,7 +21,7 @@ export default async function handleRequest(
     },
     // Always allow Sanity Studio to iframe this app — the initial iframe load
     // happens BEFORE the preview cookie is set, so this cannot be conditional
-    frameAncestors: ["'self'", 'https://*.sanity.studio'],
+    frameAncestors: ["'self'", 'https://www.sanity.io', 'https://*.sanity.studio'],
     connectSrc: [
       'https://sx997gpv.api.sanity.io',
       'wss://sx997gpv.api.sanity.io',
@@ -55,8 +55,7 @@ export default async function handleRequest(
   }
 
   responseHeaders.set('Content-Type', 'text/html');
-  // CSP temporarily disabled to validate Presentation tool iframe flow
-  // responseHeaders.set('Content-Security-Policy', header);
+  responseHeaders.set('Content-Security-Policy', header);
 
   return new Response(body, {
     headers: responseHeaders,

@@ -10,12 +10,23 @@ declare global {
   interface Env {
     SANITY_API_READ_TOKEN: string
     SANITY_PROJECT_ID: string
-    SANITY_DATASET: string
+    SANITY_DATASET_PRODUCTION: string
+    SANITY_DATASET_STAGING: string
+    SANITY_DATASET_DEV: string
     SANITY_STUDIO_URL: string
     SESSION_SECRET: string
+    // HTTP Basic Auth (Phase 1 — shared across staging + dev)
+    PRIVATE_HYDROGEN_USERNAME?: string
+    PRIVATE_HYDROGEN_PASSWORD?: string
+    PRIVATE_HYDROGEN_AUTH_DISABLED?: string
   }
 
   interface HydrogenAdditionalContext {
     sanity: import('hydrogen-sanity').SanityContext
+  }
+
+  // Cloudflare Workers extension — not in lib.dom SubtleCrypto
+  interface SubtleCrypto {
+    timingSafeEqual(a: ArrayBuffer | ArrayBufferView, b: ArrayBuffer | ArrayBufferView): boolean
   }
 }
